@@ -15,6 +15,7 @@ project_helper_source_order <- function() {
     "reliability_calibration.R",
     "stats_helpers.R",
     "stage2_estimators.R",
+    "fuller_mlm.R",
     "blup_helpers.R",
     "sim_diagnostics.R",
     "lai_openmx_helpers.R",

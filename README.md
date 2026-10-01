@@ -9,7 +9,7 @@ This repository contains reusable R helpers, simulation drivers, and technical n
 - `lai_replication/`: Lai and Liu apples-to-apples replication modules and runner.
 - `documentation/`: technical notes, manuscripts, references, and rendered PDFs.
 - `archive/`: removed legacy or experimental helpers retained for reference.
-- `src/`: TMB C++ source used by the TMB derivative backend.
+- `src/`: TMB derivative source and optional Rcpp Fuller/M-MOM kernels.
 - `tests/`: lightweight checks for shared calculations.
 
 Simulation and analysis scripts include:
@@ -33,10 +33,124 @@ Simulation and analysis scripts include:
 - `R/sim_diagnostics.R`: first-stage singularity, EB collinearity, and design-condition diagnostics.
 - `R/stats_helpers.R`: extraction of estimates, standard errors, and intervals from `lm` and `lmer` fits.
 - `R/stage2_estimators.R`: observed-score, HC3, ridge, EIV, and stacked-sandwich result-row formatting helpers.
+- `R/fuller_mlm.R`: standalone arbitrary-predictor Fuller/M-MOM regression
+  for unshrunk MLM proxies, with optional Rcpp acceleration.
 - `R/derivative_backends.R`: finite-difference, `numDeriv`, `merDeriv`, TMB, and analytical derivative backend selection.
 - `R/tmb_stage1_helpers.R`: TMB model compilation/object/hessian helpers for the stage-1 Gaussian model.
 - `R/stacked_sandwich_helpers.R`: parameter packing, cluster likelihoods, corrected-score extraction, and stacked M-estimation sandwich assembly.
 - `R/lai_openmx_helpers.R`: shared Lai-style EB measurement-model inputs, OpenMx retry/status extraction, and 2S-PA/2S-PAA wrappers.
+
+## Fuller/M-MOM core for MLMs
+
+`R/fuller_mlm.R` and `src/fuller_mlm_kernels.cpp` are the focused extraction
+from `vh_fsr/` for a REPAIR/BLUP-unshrinking package. They have no runtime
+dependency on that prototype, CFA software, or the simulation helpers.
+The original `vh_fsr/` code and the existing simulation estimators are retained.
+
+The audit found that **the Fuller-mode equations in `vh_fsr/` already match
+the existing MLM estimator**. Rcpp accelerates covariance validation, sums,
+matrix-vector products, and variance contributions; it does not define a
+different estimator. The extraction removes the other modes and calculations
+and validates inputs once across the requested variants.
+
+| Feature in `vh_fsr/` | Treatment in the MLM extraction |
+| --- | --- |
+| Arbitrary number of predictors, full predictor error covariance | Retained; useful for multiple MLM random effects and observed covariates |
+| Row-specific error covariance and feasible inverse-case-variance weights | Retained; already present in `fit_fuller_dual_core`, and needed for unbalanced MLM designs |
+| Outcome error variance and predictor–outcome error covariance | Retained; both are already in the MLM equations |
+| Fuller determinant roots, alpha rules, preliminary/bread switches | Retained with the same defaults and equations |
+| Fixed correction coefficient (`fixed_c_F`, including Croon) | Removed |
+| Empirical perturbation weights and externally fixed analysis weights | Removed |
+| Corrected-equation empirical sandwich and per-row estimating functions | Removed; the existing model-based Fuller covariance is retained |
+| Measurement tempering | Removed; all supplied error moments receive the full intended correction |
+| Factor-score construction, CFA extraction, two-step CFA/MLM sandwich | Not included; these were separate modules in `vh_fsr/` |
+
+Load the R module and compile the optional backend once for standalone use:
+
+```r
+source("R/fuller_mlm.R")
+Rcpp::sourceCpp("src/fuller_mlm_kernels.cpp")
+```
+
+For the same dual-predictor inputs as the existing estimator:
+
+```r
+# dat contains y, unshrunk x0/x1, and their additive error covariances.
+n <- nrow(dat)
+omega_x <- array(0, c(2L, 2L, n))
+omega_x[1, 1, ] <- dat$s11
+omega_x[1, 2, ] <- omega_x[2, 1, ] <- dat$s12
+omega_x[2, 2, ] <- dat$s22
+
+fits <- fit_fuller_mlm_variants(
+  y = dat$y,
+  x = as.matrix(dat[c("x0", "x1")]),
+  omega_x = omega_x,
+  omega_y = dat$syy,                      # omit for an observed outcome
+  omega_xy = as.matrix(dat[c("c0", "c1")]) # omit only if errors are uncorrelated
+)
+fits$stabilized$coefficients
+fits$stabilized$vcov
+```
+
+`fit_fuller_mlm()` fits one choice of `preliminary_moment` and
+`variance_bread`; both default to `"modified"`. `fit_fuller_mlm_variants()`
+returns a named list of fits using the existing nested comparisons:
+
+| Variant | Preliminary moment | Variance bread |
+| --- | --- | --- |
+| `stabilized` | modified | modified |
+| `fuller_preliminary` | fuller | modified |
+| `fuller_equations` | fuller | fuller |
+
+The matrix API returns every coefficient and the full covariance, rather than
+the legacy one-row focal-coefficient schema. It reproduces the unstandardized
+path (`skip_internal_scaling = TRUE`), with no internal latent-SD scaling or
+automatic tempering search. It requires aligned finite inputs and valid
+positive-semidefinite error blocks instead of silently dropping incomplete
+rows or clamping negative input variances. Numerical fitting failures return
+`converged = FALSE`, `status_code = 1`, and a message; invalid inputs raise
+errors. Check `converged` before accessing the coefficient table.
+
+The input scores **must already be unshrunk**, and their error covariances
+must be expressed on that same additive-error scale. The fitter does not
+unshrink raw BLUPs and does not interpret posterior BLUP variances as additive
+proxy-error variances. Zero covariance rows/columns allow error-free observed
+predictors. Standard errors retain the existing conditional model-based Fuller
+calculation: Stage-1 parameter uncertainty is not propagated.
+
+`backend = "auto"` selects registered kernels, otherwise R; use `"rcpp"` to
+require compiled acceleration. The reference R loops are retained for checks
+and portability, not as a speed improvement over the specialized dual code.
+To incorporate the two source files into a package, add `geigen` and `Rcpp`
+to `Imports`, `Rcpp` and `RcppArmadillo` to `LinkingTo`, generate exports with
+`Rcpp::compileAttributes()`, register the package DLL with
+`useDynLib(<package-name>, .registration = TRUE)`, import `Rcpp::evalCpp`,
+and export the two fitters/register `print.fuller_mlm_fit`.
+An installed package should compile on installation, not call `sourceCpp()`
+when fitting. The existing repository also contains a separate TMB source;
+only the focused Rcpp source is needed for this extraction.
+
+Validation and a reproducible end-to-end benchmark (compilation excluded):
+these require `geigen`, `Rcpp`, `RcppArmadillo`, a working C++ toolchain, and
+`dplyr`, `purrr`, and `tibble` for the established R estimator used as a reference.
+
+```sh
+Rscript --vanilla tests/test_fuller_mlm.R
+Rscript --vanilla tests/benchmark_fuller_mlm.R 1600 7
+```
+
+The tests compare all three variants with the production single/dual estimator
+and exercise R/Rcpp full-covariance parity for arbitrary q, covariance formats,
+nonzero cross-error terms, error-free covariates, the OLS limit, the weak-root
+branch, and failures. Neither command requires the separate `vh_fsr/` prototype.
+When that directory is available, append `--with-fsr` to either command to add
+the original prototype as another reference. The optional tests compare full
+covariance matrices and the optional benchmark includes its compiled backend.
+On the development host, the median time for all three variants at n = 1600,
+q = 2 was 0.186 s for the existing dual code, 0.012 s for the `vh_fsr` Rcpp
+code, and 0.008 s for the focused Rcpp code (7 repetitions). The focused R
+fallback took 0.342 s. These are local timings, not universal speed guarantees.
 
 ## Lai Replication
 
