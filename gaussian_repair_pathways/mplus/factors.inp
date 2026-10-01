@@ -1,0 +1,11 @@
+TITLE: REPAIR two-factor Gaussian measurement model;
+DATA: FILE = factors.dat;
+VARIABLE: NAMES = id y1-y6; USEVARIABLES = y1-y6; IDVARIABLE = id; MISSING = ALL(-999);
+ANALYSIS: ESTIMATOR = ML;
+MODEL:
+ f1 BY y1@1 y2 y3;
+ f2 BY y4@1 y5 y6;
+ f1 WITH f2;
+ y3 WITH y4;
+OUTPUT: TECH1 TECH4;
+SAVEDATA: FILE = factor_scores.dat; SAVE = FSCORES; FORMAT = F20.10;

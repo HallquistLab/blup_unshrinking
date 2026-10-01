@@ -1,0 +1,468 @@
+---
+title: "REPAIR from Bayesian and Gaussian latent-variable models"
+subtitle: "Executable pathways from brms, rstanarm, and Mplus to the existing Fuller correction"
+date: "2026-09-18"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    code-fold: true
+    code-tools: true
+    embed-resources: true
+    html-math-method: katex
+    theme: cosmo
+    fig-width: 10
+    fig-height: 5.5
+    grid:
+      body-width: 1100px
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(knitr)
+folder <- dirname(normalizePath(knitr::current_input(dir=TRUE)))
+root <- dirname(folder)
+rd <- file.path(folder,"results")
+read_csv <- function(n) read.csv(file.path(rd,paste0(n,".csv")),check.names=FALSE)
+read_rds <- function(n) readRDS(file.path(rd,paste0(n,".rds")))
+cfg <- read_rds("config")
+results <- read_csv("structural_results")
+checks <- read_csv("equivalence_checks")
+mc <- read_csv("monte_carlo_summary")
+stress_mc <- mc[mc$design=="Stress: pooled residual variance",]
+factor_mc <- mc[mc$design=="Factors: fixed measurement parameters",]
+mc_value <- function(x,method,col="mean_estimate") x[x$method==method,col]
+scores <- read_rds("scores")
+dir.create(file.path(folder,"figures"),showWarnings=FALSE)
+plugins <- read_csv("plugin_comparison")
+export_check <- read_csv("mplus_export_check")
+fmt <- function(x,d=3) formatC(x,format="f",digits=d)
+scientific <- function(x) formatC(x,format="e",digits=2)
+method_labels <- c("Oracle: true predictors"="Oracle", "Likelihood-only / naive OLS"="Unshrunk + OLS",
+  "Conditional posterior mean / naive OLS"="Conditional mean + OLS", "REPAIR / stabilized"="REPAIR: stabilized",
+  "REPAIR / fuller_equations"="REPAIR: Fuller equations")
+show_source <- function(file,from=NULL,to=NULL,language="r") {
+  x <- readLines(file.path(folder,file))
+  if(!is.null(from)) x <- x[seq(from,if(is.null(to)) length(x) else to)]
+  cat(paste0("```",language,"\n",paste(x,collapse="\n"),"\n```\n"))
+}
+theme_set(theme_minimal(base_size=12)+theme(panel.grid.minor=element_blank(),legend.position="bottom"))
+knitr::opts_chunk$set(dpi=150,fig.align="center",out.width="100%")
+```
+
+## What this report demonstrates
+
+**REPAIR does not require first-stage estimates to come from a conventional MLM package.** It requires a recoverable measurement likelihood and correctly defined sampling-error covariances. A linear Gaussian measurement model supplies these exactly, conditional on its shared parameters.
+
+This report actually fits four measurement models:
+
+| Model | Software and estimator | Quantities recovered |
+|---|---|---|
+| Negative affect regressed on within-person stress | brms / Stan HMC | Person intercept and stress-reactivity slope |
+| The same measurement specification | rstanarm / Stan HMC | Person intercept and stress-reactivity slope |
+| The same measurement specification | Mplus Bayes, two-level random slope | Person intercept and stress-reactivity slope |
+| Two correlated factors measured by six continuous indicators | Mplus maximum likelihood | Two latent factor values |
+
+The factor example adds correlated indicator residuals and planned missing observations. It illustrates the broader Gaussian SEM pathway; it is a single-level measurement model, while the stress example is the two-level/MSEM example. No Mplus result in this report is a substituted lavaan result or a simulated software output.
+
+For every model, we compare two calculations: direct reconstruction of the Gaussian likelihood and removal of Gaussian prior precision from a conditional posterior. **They agree on scores, measurement-error covariances, Fuller coefficients, and Fuller standard errors to numerical precision.** The largest Fuller coefficient difference in this run is **`r scientific(max(checks$max_Fuller_coefficient_difference))`**. We additionally check genuinely exported Mplus factor scores, with an explicit allowance for rounding in its printed parameter estimates.
+
+The second-stage estimates come from the repository's existing `fit_fuller_dual_variants()` implementation, sourced without modification. A repeated-cohort experiment with **`r cfg$reps` replications per design** distinguishes algebraic equivalence from statistical recovery of a known structural coefficient.
+
+## The Gaussian interface REPAIR needs
+
+At fixed shared measurement parameters, write
+
+$$
+\mathbf y_j=\mathbf a_j+\mathbf H_j\boldsymbol\theta_j+\boldsymbol\varepsilon_j,
+\qquad \boldsymbol\varepsilon_j\sim N(\mathbf0,\mathbf R_j),
+\qquad \boldsymbol\theta_j\sim N(\boldsymbol\mu_j,\mathbf G_j).
+$$
+
+The person-specific vector can contain slopes, latent factor values, or coefficients of a trajectory. The requirement is linearity in that vector, with residual covariance fixed with respect to it. Gaussian observation errors alone do not establish this condition.
+
+### Path A: export the measurement likelihood
+
+Save the measurements after offsets, the measurement/design matrix, and the residual covariance:
+
+$$
+\mathbf y_j-\mathbf a_j,\quad \mathbf H_j,\quad \mathbf R_j.
+$$
+
+Equivalently, export the likelihood information matrix and vector:
+
+$$
+\mathbf J_j=\mathbf H_j^\top\mathbf R_j^{-1}\mathbf H_j,
+\qquad
+\mathbf h_j=\mathbf H_j^\top\mathbf R_j^{-1}(\mathbf y_j-\mathbf a_j).
+$$
+
+Then REPAIR's inputs are
+
+$$
+\boxed{\widehat{\boldsymbol\theta}_j=\mathbf J_j^{-1}\mathbf h_j,
+\qquad \boldsymbol\Psi_j=\mathbf J_j^{-1}.}
+$$
+
+The prior covariance is not needed for this route. Pooling information to estimate $\mathbf R_j$ remains useful after shrinkage is removed.
+
+### Path B: export a conditional Gaussian posterior and its matching prior
+
+Alternatively, save the full vectors and covariance matrices
+
+$$
+\mathbf m_j,\quad \mathbf C_j,\quad\boldsymbol\mu_j,\quad\mathbf G_j,
+$$
+
+where $\mathbf m_j$ and $\mathbf C_j$ are the posterior mean and covariance **conditional on the same fixed shared parameters**. Gaussian mean and MAP coincide here. The prior mean may depend on observed covariates.
+
+Subtract prior information:
+
+$$
+\boxed{
+\boldsymbol\Psi_j=(\mathbf C_j^{-1}-\mathbf G_j^{-1})^{-1},
+\qquad
+\widehat{\boldsymbol\theta}_j=
+\boldsymbol\Psi_j(\mathbf C_j^{-1}\mathbf m_j-\mathbf G_j^{-1}\boldsymbol\mu_j).
+}
+$$
+
+These are exact Gaussian identities, not Newton or Laplace approximations. They reverse the usual addition of prior and likelihood precision. See [Penny and Henson's treatment of linear Gaussian hierarchical models](https://www.fil.ion.ucl.ac.uk/~wpenny/publications/spm-book/hierarchical.pdf).
+
+### Why these are the right measurement-error covariances
+
+Let $\mathbf K_j=\mathbf J_j^{-1}\mathbf H_j^\top\mathbf R_j^{-1}$. Since $\mathbf K_j\mathbf H_j=\mathbf I$,
+
+$$
+\widehat{\boldsymbol\theta}_j=\boldsymbol\theta_j+\mathbf K_j\boldsymbol\varepsilon_j,
+\qquad
+E(\widehat{\boldsymbol\theta}_j-\boldsymbol\theta_j\mid\boldsymbol\theta_j,\mathbf H_j)=\mathbf0,
+$$
+$$
+\operatorname{Var}(\widehat{\boldsymbol\theta}_j-\boldsymbol\theta_j\mid\boldsymbol\theta_j,\mathbf H_j)
+=\mathbf K_j\mathbf R_j\mathbf K_j^\top=\boldsymbol\Psi_j.
+$$
+
+**The posterior covariance $\mathbf C_j$ is not $\boldsymbol\Psi_j$.** The former describes uncertainty after combining the prior and data. The latter describes the sampling error of the recovered likelihood-only estimate. Passing a posterior SD squared directly into Fuller generally changes the measurement-error model.
+
+The implementation below uses both pathways and retains all within-person off-diagonal covariances. In computation, Cholesky factorizations and linear solves replace unnecessary explicit inversions where practical.
+
+```{r}
+#| label: gaussian-adapter-code
+#| results: asis
+source_lines <- readLines(file.path(folder,"R/helpers.R"))
+start <- grep("^gaussian_person <-",source_lines)
+end <- grep("^score_row <-",source_lines)-2
+cat(paste0("```r\n",paste(source_lines[start:end],collapse="\n"),"\n```\n"))
+```
+
+## Demonstration 1: stress reactivity and later depression
+
+The measurement model is
+
+$$
+NA_{ij}=\beta_B Stress^{BW}_j+a_{0j}+s_jStress^{WI}_{ij}+\varepsilon_{ij},
+\qquad
+\begin{pmatrix}a_{0j}\\s_j\end{pmatrix}
+\sim N\left[\begin{pmatrix}1\\.5\end{pmatrix},
+\begin{pmatrix}.64&.168\\.168&.36\end{pmatrix}\right].
+$$
+
+We set $\beta_B=.4$ and $\sigma^2=2.25$. Within-person stress is centered and scaled to sample variance one for each person. There are **300 people**, half with 8 observations and half with 24. The distinction between person means and within-person fluctuations is explicit; this example does not estimate latent person means for stress.
+
+The structural model is
+
+$$
+Depression_j=1+.25(a_{0j}-1)+.60(s_j-.5)+\zeta_j,
+\qquad \zeta_j\sim N(0,.8^2).
+$$
+
+The focal estimand is therefore **an unstandardized slope coefficient of .60**, controlling for the person's intercept. We include both person-specific predictors to exercise the full two-predictor Fuller machinery. Depression is an observed outcome with independent structural residual; that residual is not entered as outcome measurement error.
+
+### brms and rstanarm fits
+
+Both packages fit this formula:
+
+```r
+na ~ stress_w + stress_b + (1 + stress_w | id)
+```
+
+Each Stan fit uses four chains, 1,000 warmup and 1,000 retained iterations per chain, `adapt_delta = .95`, and maximum tree depth 12. brms uses explicit normal fixed-effect priors, exponential residual/random-effect SD priors, and an LKJ(2) correlation prior. rstanarm uses explicit normal fixed-effect and exponential residual-SD priors, with its default `decov()` group-covariance prior. The priors are **not matched exactly across packages**, so the models should give similar, not numerically identical, plug-in parameters. See the [brms model interface](https://paulbuerkner.com/brms/reference/brm.html) and [rstanarm group-specific model interface](https://mc-stan.org/rstanarm/reference/stan_glmer.html).
+
+The extraction computes $E(\sigma^2\mid y)$, not $E(\sigma\mid y)^2$. It averages complete covariance matrices draw by draw, rather than multiplying separately averaged SDs and correlations. brms supplies these through [`VarCorr(..., summary = FALSE)`](https://paulbuerkner.com/brms/reference/VarCorr.brmsfit.html); rstanarm's [`as.matrix()`](https://mc-stan.org/rstanarm/reference/as.matrix.stanreg.html) supplies the corresponding parameter draws.
+
+```{r}
+#| label: model-fit-code
+#| results: asis
+show_source("run_models.R",16,73)
+```
+
+For each participant, subtract the fitted $\widehat\beta_B Stress^{BW}_j$ and recover the intercept and slope from $\mathbf H_j=[\mathbf1,\mathbf{Stress}^{WI}_j]$. Thus $a_{0j}$ is the intercept **after adjusting for between-person stress**. This is the intercept appearing in the generating structural model. A raw person-specific intercept without this subtraction would be a different predictor.
+
+With homoskedastic independent measurement residuals,
+
+$$
+\widehat{\boldsymbol\theta}_j=(\mathbf H_j^\top\mathbf H_j)^{-1}\mathbf H_j^\top
+(\mathbf{NA}_j-\widehat\beta_B Stress^{BW}_j\mathbf1),
+\qquad
+\widehat{\boldsymbol\Psi}_j=\widehat\sigma^2(\mathbf H_j^\top\mathbf H_j)^{-1}.
+$$
+
+The slope is the individual OLS slope. Its ME variance is $\widehat\sigma^2/\sum_i(Stress^{WI}_{ij})^2$. People with 8 measurements therefore contribute noisier slope estimates than those with 24, even though the same pooled residual variance is used.
+
+### Mplus Bayes / two-level random-slope model
+
+This is the actual executed Mplus input. `affect` denotes the same observed negative-affect variable called `na` in R. Using `affect` also avoids a parser ambiguity in which the literal variable name `NA` is read as R's missing value.
+
+```{r}
+#| label: mplus-stress-code
+#| results: asis
+show_source("mplus/stress.inp",language="text")
+```
+
+The random slope is defined by `s | affect ON stress_w`; the between-level model gives it a distribution and covariance with the random intercept. Mplus supports these random-effect and factor combinations within its multilevel framework. [Mplus multilevel documentation](https://www.statmodel.com/HTML_UG/chapter9V8.htm).
+
+The report uses the printed Bayesian posterior medians of the fixed effects, residual variance, and random-effect covariance as one plug-in parameter set. Those estimates are rounded to three decimal places by the printed output. Mplus's default priors also differ from the two Stan fits. These choices are recorded rather than treating the three fits as identical estimators.
+
+`BPARAMETERS` also saves posterior parameter draws, and `FSCORES` saves Bayesian plausible-value summaries. Neither a plausible-value SD nor the covariance of ordinary marginal MCMC score draws is automatically the conditional covariance required by precision subtraction. [Mplus export documentation](https://www.statmodel.com/HTML_UG/chapter18V8.htm).
+
+```{r}
+#| label: fitted-parameter-table
+plugins %>% kable(digits=4,caption="Fitted plug-in parameters: posterior means for brms/rstanarm; printed posterior medians for Mplus. Generating sigma² = 2.25 and slope variance = .36.")
+```
+
+### First-stage sampling diagnostics
+
+```{r}
+#| label: stan-diagnostics
+diagnostics <- bind_rows(lapply(c("brms","rstanarm"),function(m) {
+  x <- read_csv(paste0(m,"_summary")); d <- read_csv(paste0(m,"_diagnostics"))
+  data.frame(Model=m,`Maximum Rhat`=max(x$rhat,na.rm=TRUE),
+    `Minimum bulk ESS`=min(x$ess_bulk,na.rm=TRUE),
+    Divergences=sum(d$num_divergent),`Maximum-depth hits`=sum(d$num_max_treedepth),check.names=FALSE)
+}))
+kable(diagnostics,digits=3)
+```
+
+```{r}
+#| label: mplus-diagnostics
+psr <- read_rds("mplus_stress_parsed")$tech8$psr
+data.frame(`Final iteration`=tail(psr$iteration,1),`Final PSR`=tail(psr$psr,1),
+           `Maximum PSR in last 10 checks`=max(tail(psr$psr,10)),check.names=FALSE) %>% kable(digits=3)
+```
+
+Mplus's normal termination and its full TECH8 potential scale reduction trace are retained in `mplus/stress.out`. These diagnostics concern the first-stage fit; they do not by themselves validate the second-stage plug-in uncertainty calculation.
+
+## Demonstration 2: an Mplus Gaussian factor measurement model
+
+Here the measurement equation is
+
+$$
+\mathbf y_j=\boldsymbol\nu+\boldsymbol\Lambda\boldsymbol\eta_j+\boldsymbol\varepsilon_j,
+\quad\boldsymbol\varepsilon_j\sim N(\mathbf0,\boldsymbol\Theta),
+\quad\boldsymbol\eta_j\sim N(\mathbf0,\mathbf G).
+$$
+
+There are **500 people**, six indicators, and two factors. Each factor has three indicators; its first loading is fixed to one to establish scale. The latent variances are .64 and 1, with covariance .28. Residual covariance between indicators 3 and 4 is .25, creating correlated estimation errors between recovered factor values. Every fourth person is missing indicator 2 by design, independently of all generated variables. The structural coefficients are .25 for factor 1 and .60 for factor 2.
+
+```{r}
+#| label: mplus-factor-code
+#| results: asis
+show_source("mplus/factors.inp",language="text")
+```
+
+We extract loadings, indicator intercepts, residual variances and covariance, and the latent covariance matrix from Mplus. Each person's observed-indicator subset defines $\boldsymbol\Lambda_j$, $\boldsymbol\Theta_j$, and $\boldsymbol\nu_j$. The likelihood-only scores are
+
+$$
+\widehat{\boldsymbol\eta}_j=
+(\boldsymbol\Lambda_j^\top\boldsymbol\Theta_j^{-1}\boldsymbol\Lambda_j)^{-1}
+\boldsymbol\Lambda_j^\top\boldsymbol\Theta_j^{-1}(\mathbf y_j-\boldsymbol\nu_j),
+\quad
+\widehat{\boldsymbol\Psi}_j=
+(\boldsymbol\Lambda_j^\top\boldsymbol\Theta_j^{-1}\boldsymbol\Lambda_j)^{-1}.
+$$
+
+These are Bartlett-type scores. Person-specific missingness changes the error covariance, and the correlated residuals produce a nonzero off-diagonal entry. We retain it when calling Fuller.
+
+```{r}
+#| label: factor-me-covariance
+scores[["Mplus factors"]] %>% distinct(v00,v01,v11) %>%
+  kable(digits=4,caption="Two measurement-error covariance patterns, corresponding to complete and partially observed indicator sets.")
+```
+
+### A pathway using actual saved factor scores
+
+For this ML Gaussian factor model, we also read Mplus's saved `F1` and `F2` scores, align them by `ID`, reconstruct the conditional covariance from the fitted measurement model, and subtract prior precision. The saved scores are not replaced with our calculated posterior means in this check.
+
+The printed Mplus parameter table has lower precision than the exported scores. Therefore this comparison has small rounding discrepancies; the model-consistent calculations elsewhere agree to machine precision. The largest recovered-score discrepancy is **`r fmt(export_check$max_likelihood_score_difference,6)`**, and the largest Fuller coefficient discrepancy is **`r fmt(export_check$max_Fuller_coefficient_difference,6)`**.
+
+```{r}
+#| label: saved-score-check
+kable(export_check,digits=8,caption="Actual exported Mplus scores versus reconstruction using rounded printed parameters.")
+```
+
+## Both pathways call the existing Fuller code
+
+Every participant contributes `x0`, `x1`, `v00`, `v01`, and `v11`, plus the observed distal outcome. The adapter sources `R/core_utils.R` and `R/stage2_estimators.R` from the parent repository. It does not duplicate or alter the Fuller estimating equations.
+
+```r
+d$zero <- 0
+fit_fuller_dual_variants(
+  d,
+  outcome = "depression",
+  predictor_u0 = "x0", predictor_u1 = "x1",
+  meas11 = "v00", meas12 = "v01", meas22 = "v11",
+  outcome_meas_var = "zero",
+  predictor_outcome_meas_cov_u0 = "zero",
+  predictor_outcome_meas_cov_u1 = "zero",
+  variants = c("stabilized", "fuller_equations"),
+  skip_internal_scaling = TRUE
+)
+```
+
+The zeros specify an observed outcome without separately modeled measurement error and no predictor–outcome measurement-error covariance. They do **not** set the structural residual variance to zero. Raw predictor units are retained so that estimates target the generating coefficient .60. We show the repository's stabilized variant and its `fuller_equations` variant explicitly.
+
+```{r}
+#| label: equivalence-table
+checks %>% mutate(across(where(is.numeric),scientific)) %>%
+  kable(caption="Direct likelihood versus conditional Gaussian prior removal: maximum absolute discrepancies over people, covariance entries, and both Fuller variants.")
+```
+
+These checks establish correct transfer of the likelihood and error covariance into the existing code. An additional zero-error test verifies that Fuller coefficients reduce to OLS coefficients when all supplied predictor ME covariances are zero.
+
+### Structural estimates in the realized datasets
+
+```{r}
+#| label: demo-results
+results %>% select(model,method,estimate,se,ci_low,ci_high,status_code) %>%
+  kable(digits=3,caption="Focal structural coefficient; generating value .60. The oracle uses the realized true predictors and is not forced to equal .60.")
+```
+
+```{r}
+#| label: fig-demo-results
+#| fig-cap: "Structural estimates and 95% intervals in the demonstration datasets. Differences across first-stage packages reflect fitted parameters and priors, not different Fuller implementations."
+p <- results %>% filter(method!="REPAIR / fuller_equations") %>%
+  mutate(label=unname(method_labels[method])) %>%
+  ggplot(aes(x=estimate,y=label,color=label))+
+  geom_vline(xintercept=.6,linetype=2,color="grey40")+
+  geom_errorbar(aes(xmin=ci_low,xmax=ci_high),orientation="y",width=.15)+
+  geom_point(size=2)+facet_wrap(~model,ncol=2)+
+  labs(x="Unstandardized focal coefficient",y=NULL)+theme(legend.position="none")
+ggsave(file.path(folder,"figures/demo_results.png"),p,width=11,height=5.5,dpi=160)
+p
+```
+
+A single dataset cannot establish unbiasedness. The oracle coefficient also varies around .60. Naive regression on shrunken conditional posterior means can perform well in a correctly calibrated linear setting; REPAIR is not guaranteed to dominate it in every simulation. The repeated-cohort results below include that comparison rather than assuming every shrunken predictor must attenuate its structural coefficient.
+
+## Repeated-cohort validation
+
+We generate **`r cfg$reps` new datasets of `r cfg$mc_n` people for each design**, preserving the structural coefficients and measurement setup. All replicates are retained and failures are counted.
+
+This is a **conditional validation experiment**, not a simulation that refits brms, rstanarm, and Mplus in every replication. In the stress experiment, the shared fixed effects and prior covariance are set to their generating values; the common residual variance is re-estimated from pooled within-person OLS residual sums of squares, divided by the total residual degrees of freedom. In the factor experiment, loadings, indicator intercepts, latent prior, and residual covariance are fixed at their generating values. The full fitted-model demonstrations above separately establish the software-export pathways.
+
+This division isolates two questions: whether software outputs can be converted correctly, and whether the resulting additive-error inputs support Fuller correction. It does not establish unconditional coverage after estimating every first-stage parameter.
+
+```{r}
+#| label: simulation-results
+mc %>% select(design,method,attempts,successes,mean_estimate,bias,bias_MCSE,RMSE,coverage,coverage_MCSE) %>%
+  kable(digits=3,caption="Repeated-cohort performance. MCSE measures Monte Carlo uncertainty, not the standard error of an individual structural coefficient.")
+```
+
+```{r}
+#| label: fig-monte-carlo
+#| fig-cap: "Mean structural estimates across independent simulated cohorts. Intervals are ±1.96 Monte Carlo SE, not individual-model confidence intervals."
+p <- mc %>% mutate(label=unname(method_labels[method])) %>%
+  ggplot(aes(mean_estimate,label,color=label))+
+  geom_vline(xintercept=.6,linetype=2,color="grey40")+
+  geom_errorbar(aes(xmin=mean_estimate-1.96*bias_MCSE,xmax=mean_estimate+1.96*bias_MCSE),orientation="y",width=.15)+
+  geom_point(size=2.5)+facet_wrap(~design,ncol=1)+
+  labs(x="Mean unstandardized focal coefficient",y=NULL)+theme(legend.position="none")
+ggsave(file.path(folder,"figures/monte_carlo.png"),p,width=11,height=5.5,dpi=160)
+p
+```
+
+The relevant comparison is whether REPAIR reduces the systematic distortion from treating likelihood-only scores as error-free, while its intervals behave reasonably under this conditional design. Both bias and coverage remain Monte Carlo estimates; the report does not label every realized coefficient close to .60 as a successful correction.
+
+**Observed recovery:** for stress reactivity, the mean naive likelihood-score coefficient is **`r fmt(mc_value(stress_mc,"Likelihood-only / naive OLS"))`**, compared with **`r fmt(mc_value(stress_mc,"REPAIR / stabilized"))`** after REPAIR. The latter's bias is **`r fmt(mc_value(stress_mc,"REPAIR / stabilized","bias"))`**, with Monte Carlo SE **`r fmt(mc_value(stress_mc,"REPAIR / stabilized","bias_MCSE"))`**, and coverage is **`r fmt(100*mc_value(stress_mc,"REPAIR / stabilized","coverage"),1)`%**. For the factor model, the corresponding naive and REPAIR means are **`r fmt(mc_value(factor_mc,"Likelihood-only / naive OLS"))`** and **`r fmt(mc_value(factor_mc,"REPAIR / stabilized"))`**, with REPAIR coverage **`r fmt(100*mc_value(factor_mc,"REPAIR / stabilized","coverage"),1)`%**.
+
+Conditional posterior means also preserve the structural relationship well in this example. Their mean coefficients are **`r fmt(mc_value(stress_mc,"Conditional posterior mean / naive OLS"))`** and **`r fmt(mc_value(factor_mc,"Conditional posterior mean / naive OLS"))`**. This is compatible with predictor calibration: when $\mathbf m=E(\boldsymbol\theta\mid\mathbf y)$ under a correct measurement model and the structural residual has mean zero given those measurements, $E(Depression\mid\mathbf y)=\gamma_0+\boldsymbol\gamma^\top\mathbf m$. Thus, the same unstandardized coefficients can survive shrinkage. These results support the REPAIR interface and correction; they do not establish superiority over calibrated conditional means in this favorable linear setting.
+
+## A check with nondiagonal residual covariance
+
+The stress model uses $\sigma^2\mathbf I$, while the factor model already includes a nonzero residual covariance. We additionally check a nine-observation GLS model with AR(1)-shaped residual covariance. Direct matrix identities verify $\mathbf K\mathbf H=\mathbf I$ and $\mathbf K\mathbf R\mathbf K^\top=\boldsymbol\Psi$. Twenty thousand simulated error vectors then check the resulting sampling covariance empirically.
+
+```{r}
+#| label: gls-validation
+kable(read_csv("GLS_covariance_check"),digits=4)
+```
+
+This is why nondiagonal $\mathbf R$ requires GLS rather than separate OLS plus an arbitrary variance adjustment.
+
+## Why ordinary posterior draws are not the conditional covariance
+
+brms's [`ranef(..., summary = FALSE)`](https://paulbuerkner.com/brms/reference/ranef.brmsfit.html) provides posterior random-effect draws. Those draws integrate over uncertainty in shared means, variances, and other parameters. Their covariance is generally not the fixed-hyperparameter conditional $\mathbf C_j$ required above.
+
+To make the distinction concrete, we deliberately take each person's covariance of marginal brms random-effect draws and subtract the plug-in prior precision. We label this an incorrect adapter, not another valid REPAIR method.
+
+```{r}
+#| label: incorrect-marginal-adapter
+bad <- read_csv("marginal_covariance_misuse")
+data.frame(
+  People=nrow(bad),`Nonpositive information matrices`=sum(!bad$positive),
+  `Maximum slope discrepancy`=max(abs(bad$slope_difference),na.rm=TRUE),
+  `Maximum slope ME variance discrepancy`=max(abs(bad$ME_difference),na.rm=TRUE),check.names=FALSE) %>%
+  kable(digits=4)
+```
+
+Any difference here combines marginalization, Monte Carlo error, and use of plug-in prior summaries. It is not a pure numerical estimate of marginalization bias. Even if its resulting matrix is positive definite and the discrepancy happens to be small, the exact Gaussian identity does not justify that substitution.
+
+A valid alternative is to calculate conditional moments at each coherent draw of shared parameters. However, running Fuller at each draw and combining the results is not automatically a fully Bayesian posterior or a justified multiple-imputation procedure. A full refitting bootstrap or a jointly specified Bayesian structural model requires its own uncertainty argument.
+
+## What an applied user should save
+
+| Purpose | Required output |
+|---|---|
+| Direct likelihood reconstruction | Original measurement data, IDs, exact design/loadings, offsets/intercepts, and all residual covariance parameters |
+| Conditional posterior inversion | Full conditional mean vector, full conditional covariance, matching prior mean and covariance, and the fixed shared parameters defining them |
+| Fuller input | Likelihood-only score vector and its full sampling-error covariance for every person |
+| Structural model | Distal outcome, observed covariates, units/centering definitions, and matching IDs |
+| Uncertainty and reproducibility | Fitted-model object or parameter draws, model syntax, priors, missingness rules, diagnostics, seeds, software versions, and sufficient data to refit |
+
+Several boundaries are consequential:
+
+1. **Recover the jointly coupled vector.** Marginal standard errors alone generally cannot undo multivariate shrinkage. Select the desired slope or factor after recovering the relevant joint vector.
+2. **Check identification without the prior.** A proper posterior can exist when the likelihood information is singular. This implementation stops rather than silently replacing an unidentified inverse with a generalized inverse.
+3. **Maintain parameter scale and meaning.** Do not mix standardized scores, total coefficients, random deviations, or differently centered intercepts. General nonlinear transformations do not preserve the exact additive-error model.
+4. **Allow appropriate residual structure.** Heteroskedasticity, serial correlation, correlated indicators, and missingness alter $\mathbf R_j$ and hence $\boldsymbol\Psi_j$. Pooling an incorrect residual model can miscalibrate the correction.
+5. **Keep cross-covariances when both sides are estimated.** Estimated predictor and outcome processes may have correlated errors. The existing Fuller interface has explicit inputs for these covariances; this report's independently generated observed outcomes use zero.
+6. **Separate person independence from Gaussianity.** Crossed effects and shared latent processes may require a stacked calculation and an extension of second-stage inference to correlated errors across people. Four per-person posterior summaries may be insufficient.
+7. **Distinguish fitted-model identities from unconditional inference.** Shared parameters are estimated in the demonstrations. Exact algebra at their fitted values does not remove their estimation uncertainty. The repeated-cohort experiment conditions on most of these parameters.
+
+A joint MSEM that already regresses the distal outcome on the latent slope estimates that relationship directly; REPAIR is not an additional correction to its fitted structural coefficient. REPAIR supplies a two-stage alternative when measurement estimation and structural analysis are separated.
+
+## Reproduce and inspect
+
+Run from the repository root:
+
+```bash
+Rscript gaussian_repair_pathways/run_models.R all
+Rscript gaussian_repair_pathways/analyse.R 250
+Rscript gaussian_repair_pathways/tests/check_outputs.R
+quarto render gaussian_repair_pathways/report.qmd
+```
+
+The fitting script can also run `data`, `brms`, `rstanarm`, and `mplus` separately, in that order for data preparation and then independently for the software fits. Rendering reads completed results and does not silently refit models. Mplus requires a working installation and license; a failed or unavailable Mplus fit stops rather than being replaced with another estimator.
+
+Files in this folder include the reusable Gaussian adapter, simulation generator, actual executed Mplus inputs and outputs, fitted plug-in quantities, person-level scores, all replication-level structural results, package session information, and source hashes for the existing Fuller code. Large cached Bayesian fit objects are kept under `cache/` and ignored by Git.
+
+```{r}
+#| label: provenance
+kable(read_csv("source_hashes"),caption="Source fingerprints recorded when the analyses were executed.")
+```

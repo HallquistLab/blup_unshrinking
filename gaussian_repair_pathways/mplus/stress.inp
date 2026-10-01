@@ -1,0 +1,20 @@
+TITLE: REPAIR Gaussian stress measurement model;
+DATA: FILE = stress.dat;
+VARIABLE: NAMES = id affect stress_w stress_b;
+ USEVARIABLES = affect stress_w stress_b;
+ CLUSTER = id; WITHIN = stress_w; BETWEEN = stress_b;
+ANALYSIS: TYPE = TWOLEVEL RANDOM;
+ ESTIMATOR = BAYES; CHAINS = 4; PROCESSORS = 4; BITERATIONS = (10000); BSEED = 20260918;
+MODEL:
+ %WITHIN%
+ s | affect ON stress_w;
+ affect (ve);
+ %BETWEEN%
+ affect ON stress_b;
+ [affect s];
+ affect s;
+ affect WITH s;
+OUTPUT: TECH1 TECH8;
+SAVEDATA: FILE = stress_scores.dat; SAVE = FSCORES (1000);
+ BPARAMETERS = stress_parameters.dat;
+ FORMAT = F20.10;

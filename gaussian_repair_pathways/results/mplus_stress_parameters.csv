@@ -1,0 +1,8 @@
+"paramHeader","param","est","posterior_sd","pval","lower_2.5ci","upper_2.5ci","sig","BetweenWithin"
+"Residual.Variances","AFFECT",2.244,0.048,0,2.151,2.341,TRUE,"Within"
+"AFFECT.ON","STRESS_B",0.368,0.051,0,0.269,0.468,TRUE,"Between"
+"AFFECT.WITH","S",0.143,0.038,0,0.073,0.222,TRUE,"Between"
+"Means","S",0.553,0.043,0,0.47,0.637,TRUE,"Between"
+"Intercepts","AFFECT",1.05,0.051,0,0.95,1.149,TRUE,"Between"
+"Variances","S",0.352,0.043,0,0.277,0.448,TRUE,"Between"
+"Residual.Variances","AFFECT",0.584,0.063,0,0.475,0.72,TRUE,"Between"

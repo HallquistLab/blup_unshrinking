@@ -1,0 +1,7 @@
+cache/
+mplus/fort*
+mplus/~*
+mplus/stress_parameters.dat
+mplus/stress_scores.dat
+report_files/
+*_cache/

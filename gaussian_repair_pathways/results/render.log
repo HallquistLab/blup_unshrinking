@@ -1,0 +1,68 @@
+
+
+processing file: report.qmd
+1/37                             
+2/37 [setup]                     
+3/37                             
+4/37 [gaussian-adapter-code]     
+5/37                             
+6/37 [model-fit-code]            
+7/37                             
+8/37 [mplus-stress-code]         
+9/37                             
+10/37 [fitted-parameter-table]    
+11/37                             
+12/37 [stan-diagnostics]          
+13/37                             
+14/37 [mplus-diagnostics]         
+15/37                             
+16/37 [mplus-factor-code]         
+17/37                             
+18/37 [factor-me-covariance]      
+19/37                             
+20/37 [saved-score-check]         
+21/37                             
+22/37 [equivalence-table]         
+23/37                             
+24/37 [demo-results]              
+25/37                             
+26/37 [fig-demo-results]          
+27/37                             
+28/37 [simulation-results]        
+29/37                             
+30/37 [fig-monte-carlo]           
+31/37                             
+32/37 [gls-validation]            
+33/37                             
+34/37 [incorrect-marginal-adapter]
+35/37                             
+36/37 [provenance]                
+37/37                             
+output file: report.knit.md
+
+pandoc 
+  to: html
+  output-file: report.html
+  standalone: true
+  embed-resources: true
+  section-divs: true
+  html-math-method: katex
+  wrap: none
+  default-image-extension: png
+  toc: true
+  toc-depth: 2
+  
+metadata
+  document-css: false
+  link-citations: true
+  date-format: long
+  lang: en
+  title: REPAIR from Bayesian and Gaussian latent-variable models
+  subtitle: Executable pathways from brms, rstanarm, and Mplus to the existing Fuller correction
+  date: '2026-09-18'
+  theme: cosmo
+  grid:
+    body-width: 1100px
+  
+Output created: report.html
+
