@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 
 #' ---
-#' title: "Vig & Hallquist 2026 Random Effects Simulation"
+#' title: "REPAIR: Random-effect prediction adjustment for inference in regression"
 #' description: "Legacy and amended simulation studies including: (1) RE as outcome,
 #'               (2) RE as predictor, (3) RE as predictor and outcome,
 #'               (4) heterogeneous cluster information and reliability,
