@@ -12,11 +12,16 @@ REPAIR software record:
 
 > **REPAIR: Random-effect prediction adjustment for inference in regression**
 
-After Zenodo assigns the data record DOI, replace the placeholder below with
-the version-specific DOI and use that DOI when downloading the files:
+The version 1 data record is available at
+[10.5281/zenodo.23965547](https://doi.org/10.5281/zenodo.23965547). The
+concept DOI for the data across versions is
+[10.5281/zenodo.23965546](https://doi.org/10.5281/zenodo.23965546). Use the
+version DOI when citing this exact release and the Zenodo record page when
+downloading the files:
 
 ```text
-REPAIR simulation data DOI: <DATA-DOI>
+REPAIR simulation data DOI: 10.5281/zenodo.23965547
+REPAIR simulation data concept DOI: 10.5281/zenodo.23965546
 ```
 
 The software DOI and data DOI should be cited together when an analysis uses
@@ -26,12 +31,12 @@ simulation tables.
 
 ## Files
 
-| File | Size (bytes) | SHA-256 |
-|---|---:|---|
-| `study1v2.parquet` | 782478809 | `c7c6ef56d6e4265b96a8cf9c007c68b3431ce3cccd00c061cca8384c52463f44` |
-| `study2v2.parquet` | 984683117 | `53749e4ffebf73bc6a765220d3551b7b50836f43e2f30da1870982caae485a1f` |
-| `study3v2.parquet` | 1920730132 | `ee2db081ba8c40d1e8fb56b7df1803cf4b5f48a3c2532b49c478ef4c12297fab` |
-| `study4v2.parquet` | 216399016 | `5aa6e2348f7b40ddf6c4476dcc797233a4142b0d7611a271f33234505d75d162` |
+| File | Download | Size (bytes) | MD5 | SHA-256 |
+|---|---|---:|---|---|
+| `study1v2.parquet` | [Zenodo](https://zenodo.org/records/23965547/files/study1v2.parquet) | 782478809 | `3803f9d7fb432be5dd20f1454c9038c1` | `c7c6ef56d6e4265b96a8cf9c007c68b3431ce3cccd00c061cca8384c52463f44` |
+| `study2v2.parquet` | [Zenodo](https://zenodo.org/records/23965547/files/study2v2.parquet) | 984683117 | `f387758cc74cb19c267b885a6b4e01c3` | `53749e4ffebf73bc6a765220d3551b7b50836f43e2f30da1870982caae485a1f` |
+| `study3v2.parquet` | [Zenodo](https://zenodo.org/records/23965547/files/study3v2.parquet) | 1920730132 | `8e9b8b05ea846bf7bbab81ff85d82839` | `ee2db081ba8c40d1e8fb56b7df1803cf4b5f48a3c2532b49c478ef4c12297fab` |
+| `study4v2.parquet` | [Zenodo](https://zenodo.org/records/23965547/files/study4v2.parquet) | 216399016 | `c778f2c3740ab95061ccb070d7c431bb` | `5aa6e2348f7b40ddf6c4476dcc797233a4142b0d7611a271f33234505d75d162` |
 
 Verify a download with:
 
@@ -41,6 +46,9 @@ shasum -a 256 study2v2.parquet
 shasum -a 256 study3v2.parquet
 shasum -a 256 study4v2.parquet
 ```
+
+The MD5 values above are the checksums reported by Zenodo. The SHA-256 values
+were computed locally from the source files before upload.
 
 The files are Parquet tables and can be read with R's `arrow` package or
 Python's `pyarrow` package. For example:
