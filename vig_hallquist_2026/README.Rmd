@@ -1,5 +1,5 @@
 ---
-title: "Vig & Hallquist (2026)"
+title: "REPAIR: Random-effect prediction adjustment for inference in regression"
 output: html_document
 ---
 

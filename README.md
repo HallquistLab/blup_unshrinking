@@ -2,6 +2,14 @@
 
 This repository contains reusable R helpers, simulation drivers, and technical notes for work on empirical-Bayes/BLUP score correction in multilevel models. The code is script-oriented rather than packaged as an installed R package: simulation drivers source helper files from the repository-level `R/` directory.
 
+## Citation and DOI
+
+The repository includes citation metadata in [`CITATION.cff`](CITATION.cff). The Zenodo archive is intentionally limited by [`.zenodoignore`](.zenodoignore) to the REPAIR study implementation in `vig_hallquist_2026/`, its shared R helpers, the data-release instructions in [`data/`](data/), and release metadata; unrelated simulations, legacy code, tests, generated reports, and internal provenance notes are excluded. To mint a DOI, a repository administrator should enable the `HallquistLab/blup_unshrinking` repository in [Zenodo's GitHub integration](https://zenodo.org/account/settings/github/), then create a GitHub release for the version being archived. Zenodo will archive that release and assign both a version DOI and a concept DOI for the project.
+
+The four large simulation datasets are not committed to GitHub. They should be uploaded to a linked Zenodo data record; see [`data/README.md`](data/README.md) for the file manifest, checksums, and download instructions. Once Zenodo assigns the data DOI, replace the placeholder in that file and cite the software and data records together.
+
+For reproducible citations, cite the DOI for the exact release used. Use the concept DOI only when referring to the project across versions. After the first release is archived, add Zenodo's DOI badge and the version DOI to this section.
+
 ## Repository Layout
 
 - `R/`: shared helper modules used by multiple simulations.

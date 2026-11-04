@@ -1,0 +1,18 @@
+# The DOI archive is the REPAIR study code, not the entire development
+# repository. Keep only the study, its shared R helpers, and release metadata.
+*
+!CITATION.cff
+!LICENSE
+!README.md
+!.zenodoignore
+!data/
+!data/**
+!R/
+!R/**
+!vig_hallquist_2026/
+!vig_hallquist_2026/**
+
+# Rendered outputs and internal development notes are not source code.
+vig_hallquist_2026/analysis/*.html
+vig_hallquist_2026/analysis/_vh_v2_provenance.qmd
+vig_hallquist_2026/analysis/.gitignore

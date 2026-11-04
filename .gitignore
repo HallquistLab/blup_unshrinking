@@ -53,6 +53,9 @@ rsconnect/
 outputs/
 output/
 
+# Large REPAIR simulation data are distributed through Zenodo, not Git.
+data/*.parquet
+
 .DS_Store
 
 # keep pdf private
