@@ -4,7 +4,7 @@ This repository contains reusable R helpers, simulation drivers, and technical n
 
 ## Citation and DOI
 
-The repository includes citation metadata in [`CITATION.cff`](CITATION.cff). The Zenodo archive is intentionally limited by [`.zenodoignore`](.zenodoignore) to the REPAIR study implementation in `vig_hallquist_2026/`, its shared R helpers, the data-release instructions in [`data/`](data/), and release metadata; unrelated simulations, legacy code, tests, generated reports, and internal provenance notes are excluded. To mint a DOI, a repository administrator should enable the `HallquistLab/blup_unshrinking` repository in [Zenodo's GitHub integration](https://zenodo.org/account/settings/github/), then create a GitHub release for the version being archived. Zenodo will archive that release and assign both a version DOI and a concept DOI for the project.
+The repository includes citation metadata in [`CITATION.cff`](CITATION.cff). The Zenodo archive is intentionally limited by [`.zenodoignore`](.zenodoignore) to the REPAIR study implementation in `vig_hallquist_2026/`, its shared R helpers, the data-release instructions in [`data/`](data/), and release metadata; unrelated simulations, legacy code, tests, generated reports, and internal provenance notes are excluded. The `v1.0.0` software release is archived at [10.5281/zenodo.23982336](https://doi.org/10.5281/zenodo.23982336), with concept DOI [10.5281/zenodo.23982335](https://doi.org/10.5281/zenodo.23982335) for the software across versions.
 
 The four large simulation datasets are not committed to GitHub. They are
 available in the linked Zenodo data record
@@ -12,7 +12,7 @@ available in the linked Zenodo data record
 [`data/README.md`](data/README.md) for per-file download links, checksums, and
 reading instructions. Cite the software and data records together.
 
-For reproducible citations, cite the DOI for the exact release used. Use the concept DOI only when referring to the project across versions. After the first release is archived, add Zenodo's DOI badge and the version DOI to this section.
+For reproducible citations, cite the version DOI for the exact release used. Use the concept DOI only when referring to the software across versions.
 
 ## Repository Layout
 
