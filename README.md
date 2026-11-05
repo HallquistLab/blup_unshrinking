@@ -15,9 +15,7 @@ helpers required to run them under `R/`.
 
 The large Parquet simulation datasets are available from the data record at
 [10.5281/zenodo.23965547](https://doi.org/10.5281/zenodo.23965547).
-The software release is archived at
-[10.5281/zenodo.23982336](https://doi.org/10.5281/zenodo.23982336); this
-identifier refers to the earlier full-repository archive. The DOI for this
-sanitized release will be added after Zenodo processes the release.
+The sanitized software release is archived at
+[10.5281/zenodo.23982453](https://doi.org/10.5281/zenodo.23982453).
 
 See `vig_hallquist_2026/README.Rmd` for study details and execution guidance.
