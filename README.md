@@ -4,7 +4,7 @@ This repository contains reusable R helpers, simulation drivers, and technical n
 
 ## Citation and DOI
 
-The repository includes citation metadata in [`CITATION.cff`](CITATION.cff). The sanitized `repair-v1.0.1` software release is archived at [10.5281/zenodo.23982483](https://doi.org/10.5281/zenodo.23982483), with concept DOI [10.5281/zenodo.23982335](https://doi.org/10.5281/zenodo.23982335) for the software across versions. The archive contains only the REPAIR study implementation in `vig_hallquist_2026/`, its shared R helpers, the data-release instructions in [`data/`](data/), and release metadata.
+The repository includes citation metadata in [`CITATION.cff`](CITATION.cff). The sanitized `repair-v1.0.3` software release is archived at [10.5281/zenodo.23982702](https://doi.org/10.5281/zenodo.23982702), with concept DOI [10.5281/zenodo.23982335](https://doi.org/10.5281/zenodo.23982335) for the software across versions. The archive contains only the runnable REPAIR study implementation in `vig_hallquist_2026/`, its shared R helpers, the data-release instructions in [`data/`](data/), and release metadata; the manuscript-facing `analysis/` folder is excluded.
 
 The four large simulation datasets are not committed to GitHub. They are
 available in the linked Zenodo data record
