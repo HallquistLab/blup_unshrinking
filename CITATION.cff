@@ -22,3 +22,7 @@ keywords:
   - score correction
   - simulation
 date-released: 2026-11-04
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.23982483"
+    description: "Sanitized repair-v1.0.1 software release"
