@@ -4,21 +4,20 @@ message: "If you use this code, please cite the version-specific Zenodo record a
 type: software
 authors:
   - family-names: Vig
-    given-names: Zach
+    given-names: Zachary A.
   - family-names: Hallquist
-    given-names: Michael
+    given-names: Michael N.
 abstract: >-
   Reproducible R code and simulation drivers for the REPAIR study by Vig and
-  Hallquist (2026), which evaluates random-effect prediction adjustment for
+  Hallquist, which evaluates random-effect prediction adjustment for
   inference in regression.
-repository-code: "https://github.com/HallquistLab/blup_unshrinking"
-url: "https://github.com/HallquistLab/blup_unshrinking"
+repository-code: "https://github.com/HallquistLab/blup_unshrinking/tree/manuscript-supplement"
+url: "https://github.com/HallquistLab/blup_unshrinking/tree/manuscript-supplement"
 license: GPL-3.0-only
 keywords:
-  - BLUP
-  - empirical Bayes
-  - multilevel models
+  - random effects
   - measurement error
-  - score correction
-  - simulation
+  - multilevel models
+  - two-step estimation
+  - factor score regression
 date-released: 2026-11-04

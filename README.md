@@ -2,7 +2,7 @@
 
 This release contains the **simulation pipeline for Studies 1--4** used in "REPAIR: Random-effect prediction adjustment for inference in regression" by Zachary A. Vig and Michael N. Hallquist.
 
-The simulation data are archived separately in Zenodo record [10.5281/zenodo.23965547](https://doi.org/10.5281/zenodo.23965547). See [`data/README.md`](data/README.md) for file checksums and loading instructions.
+The simulation data are archived at [10.5281/zenodo.23965546](https://doi.org/10.5281/zenodo.23965546). See [`data/README.md`](data/README.md) for file checksums and loading instructions.
 
 ## Running the simulations
 
