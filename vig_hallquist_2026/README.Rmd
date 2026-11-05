@@ -1,0 +1,297 @@
+---
+title: "REPAIR: Random-effect prediction adjustment for inference in regression"
+output: html_document
+---
+
+# Notes
+
+- Previous studies mixed and matched the terms `n_id` and `num_clus` (for level 2 N),
+and `n_trial` and `clus_size` (for level 1 N). This study will use the cluster language since
+it's more general. Of note is that some functions from other studies (including in the
+"R/" folder) use the trial/id language, so there may be mismatches between arguments 
+(just something to aware of).
+
+- Some of the machinery is set-up for non-diagonal R. Since this isn't part of the
+current study, there may be parts of that lost -- so if those structures are included
+in future study there may need to be some work to fill in the gaps.
+
+# Study Models from other studies
+
+Note that the two workflows swap beta and gamma
+
+- Study 1: BLUP as Outcome
+Level 1: y_i = beta_0 + intercept_dev_subj + (beta_z + slope_dev_subj) * z_i + e_i,  for each cluster j
+Level 2: slope_dev_subj = gamma_x_on_slope * x_i + re[, "u1"],  where (u_{0i}, u_{1i}) ~ MVN(0, tau0, tau1, rho)
+                                              ^ I'm going to change this to w in later steps for clarity
+
+- Study 2: BLUP(s) as Predictor(s)
+Level 1: y = gamma0 + gamma1 * x + u[cid, ] + u[cid, ] * x + (r),  for each cluster j, r ~ N(0, sigma2, ...)
+Level 2: z = z_intercept + beta_zu0 * u[, 1] + beta_zu1 * u[, 2] + r, where r ~ N(0, ev_z)
+
+
+# This project key:
+all variances
+G: tau0, tau1, rho
+R: sigma, r_rho
+
+
+simulate_data_blup_as_outcome()
+L1: y = gamma0_outcome + u0 + gamma1_outcome * x +  u1 * x + r
+L2: u1 = beta0w + beta1w * w + e
+                    ^ effect of interest
+
+Convert:
+[x] beta_0 -> gamma0_outcome
+[x] beta_z -> gamma1_outcome
+[don't need this] beta0w = 0
+[x] gamma_x_on_slope -> beta1w
+
+simulate_data_blup_as_predictor()
+L1: y = gamma0 + u0 + gamma1 * x  + u1 * x + r
+L2: z = beta0z + beta1z * u0 + beta2z * u1 + e
+                                ^ effect ofs
+
+Convert:
+[x] z_intercept -> beta0z
+[x] beta_zu0 -> beta1z
+[x] beta_zu1 -> beta2z
+[x] sqrt(ev_z) -> sigma_e
+[x] gamma0 -> gamma0_predictor
+[x] gamma1 -> gamma1_predictor
+
+simulate_data_dual_blup()
+L1-Y: y = gamma0_y + by0 + gamma1_y * x + by1 * x + r_y
+L1-Q: q = gamma0_q + bq0 + gamma1_q * s + bq1 * s + r_q
+L2: bq1 = theta0 * by0 + theta1 * by1 + v
+                               ^ focal effect
+
+simulate_data_study4()
+L1: same random-intercept/random-slope model as Study 2
+L2: same observed outcome model as Study 2
+Cluster information: homogeneous, moderate, severe, or information-matched
+heterogeneity, with slope variance calibrated to mean posterior reliability
+
+# Legacy and amended calibration pathways
+
+The original Study 1--4 selectors are intentionally preserved:
+
+- `1`, `2`, `3`, and `4` (or `study1`, ..., `study4`) run the legacy
+  one-coordinate calibration. These conditions hold `sigma = 1` and solve only
+  for the marginal slope variance, $\tau_1^2$. Their manifest rows are marked
+  `study_version = "legacy"` and
+  `calibration_version = "legacy_solve_tau1_sq"`.
+- `1v2`, `2v2`, `3v2`, and `4v2` run the amended fixed-shape designs. These
+  conditions fix $\tau_0^2=.81$, use $\tau_1^2/\tau_0^2=1$ in the primary
+  grid, and solve for `sigma` to attain marginal posterior slope reliability.
+  Their rows are marked `study_version = "v2"` and
+  `calibration_version = "shape_preserving_v2"`.
+- `all` retains its historical meaning: legacy Studies 1--5. `allv2` selects
+  amended Studies 1--4. `allversions` selects both series plus the ICC bridge.
+- `iccbridge` selects a 108-condition Study-2-like bridge. Its posterior-R and
+  ICC arms are identical at reference cluster size $m=10$; away from $m=10$,
+  one arm holds posterior reliability constant and the other holds ICC
+  constant. Matched arms share `bridge_pair_id` and
+  `simulation_seed_group`, so their replication streams use common random
+  numbers. The $m=10$ anchor therefore produces identical simulated samples
+  replication by replication; away from the anchor, pairing reduces Monte
+  Carlo noise in the between-arm contrast.
+- `ratiosensitivity` selects a separate 30-condition covariance-shape
+  robustness bridge. It uses one moderate-information sentinel DGM from each
+  amended Study 1--4 plus one low-reliability Study-2 stress DGM. Within each
+  DGM it crosses only the slope/intercept variance ratios 0.5, 1, and 2 with a
+  null and standardized-.4 effect. Marginal posterior slope reliability is
+  recalibrated at every ratio. The three ratio arms share
+  `variance_ratio_pair_id` and `simulation_seed_group`, so ratio-one is rerun
+  as a paired internal reference without modifying the primary-v2 outputs.
+
+The original builder names remain callable. Explicit aliases
+`make_study1_legacy_design()` through `make_study4_legacy_design()` make legacy
+use unambiguous. The amended builders are `make_study1_v2_design()` through
+`make_study4_v2_design()`. The shared calibration primitive is
+`calibrate_shape_preserving_measurement()` in `R/reliability_calibration.R`.
+`make_icc_posterior_reliability_crosswalk()` returns the deterministic VH-v2
+and Lai-style ICC/reliability crosswalk.
+
+Study 5 reuses the Study 2 BLUP-as-predictor generator and estimator bundle. It
+is a matched-calibration bridge with three arms: the legacy
+one-coordinate calibration that fixes `sigma = 1` and solves only for
+$\tau_1^2$, a shape-preserving solve-for-`sigma` marginal-reliability
+calibration, and a shape-preserving solve-for-`sigma`
+residualized-slope-reliability calibration. The old code and output label for
+the first arm is `current_g22` or `solve-G_22`; here $G_{22}=\tau_1^2$, the
+random-slope variance. The 36 conditions hold `num_clus = 100` and cross
+cluster size (10, 25), correlation (0, .5), and standardized focal effect
+(0, .2, .4) at target reliability .25.
+
+All five studies manipulate `standardized_beta_target`. Study 1 uses
+`structural_r2 = standardized_beta_target^2` internally to partition the
+marginal slope variance. Studies 2--4 retain total structural R-squared and
+focal unique R-squared only as derived diagnostics.
+
+# Estimator corrections shared by legacy and v2 designs
+
+The design selector controls the DGM, not the estimator implementation. A new
+run of either a legacy or v2 selector therefore uses the following corrected
+shared estimators:
+
+- The Fuller predictor--outcome correction uses the predictor--outcome
+  measurement-error covariance vector, not the outcome measurement-error
+  variance. Studies 1--4 create and pass named zero covariance columns because
+  their relevant measurement errors arise from separate processes (or the
+  Stage-2 outcome is observed). The zero assumption is consequently visible in
+  every replication rather than implicit in the estimator.
+- `fuller_closed_form` is the corrected, finite-sample-stabilized VH estimator.
+  `fuller_book_preliminary_closed_form` substitutes Fuller's fully corrected
+  preliminary moment, and `fuller_book_closed_form` additionally substitutes
+  Fuller's variance bread. These nested variants identify which stabilization
+  controls the upper tail of the standard errors; they do not change the
+  assumed measurement-error covariance.
+- The Lai 2S-PA wrappers reorder the four $\Lambda$ entries from the Stage-1
+  row/column convention to the column-major order required by OpenMx
+  `unique.bivariate` paths. A unit test inspects the actual RAM `A` matrix with
+  unequal off-diagonal entries, so a silent $\lambda_{12}/\lambda_{21}$
+  transposition cannot recur.
+
+The `pipeline_version` in replication files identifies this corrected
+implementation. Results produced by an older pipeline should not be pooled
+with a resumed corrected run; the completion check deliberately reruns those
+conditions.
+
+# Production execution
+
+The current condition counts are:
+
+- Study 1: 720 conditions
+- Study 2: 720 conditions
+- Study 3: 864 conditions
+- Study 4: 111 conditions
+- Study 5: 36 conditions
+- Studies 1-5 combined: 2,451 conditions
+- Amended Study 1v2: 720 conditions
+- Amended Study 2v2: 720 conditions
+- Amended Study 3v2: 864 conditions
+- Amended Study 4v2: 111 conditions
+- Amended Studies 1v2-4v2 combined: 2,415 conditions
+- ICC/posterior-reliability bridge: 108 conditions
+- Covariance-shape sensitivity bridge: 30 conditions
+
+With the default SLURM chunk size of five conditions, the corresponding array
+sizes are 144, 144, 173, 23, 8, and 491 tasks. The bundled SLURM script defaults
+to the combined `1-491%50` array. For a study-specific run, override the array at
+submission to avoid launching no-op tasks, for example:
+
+```bash
+sbatch --array=1-144%50 \
+  --export=ALL,VIG_HALLQUIST_STUDY=1 \
+  vig_hallquist_2026/slurm/vig_hallquist_condition_array.sbatch
+```
+
+The amended series uses 483 tasks at the default chunk size:
+
+```bash
+sbatch --array=1-483%50 \
+  --export=ALL,VIG_HALLQUIST_STUDY=allv2,VIG_HALLQUIST_OUT_DIR=outputs/vig_hallquist_v2 \
+  vig_hallquist_2026/slurm/vig_hallquist_condition_array.sbatch
+```
+
+The ICC bridge uses 22 tasks at the default chunk size:
+
+```bash
+sbatch --array=1-22%22 \
+  --export=ALL,VIG_HALLQUIST_STUDY=iccbridge,VIG_HALLQUIST_OUT_DIR=outputs/vig_hallquist_icc_bridge \
+  vig_hallquist_2026/slurm/vig_hallquist_condition_array.sbatch
+```
+
+The covariance-shape sensitivity bridge has a dedicated one-condition-per-task
+submission script with a 48-hour limit:
+
+```bash
+sbatch vig_hallquist_2026/slurm/vig_hallquist_variance_ratio_sensitivity.sbatch
+```
+
+It writes to `outputs/vig_hallquist_variance_ratio_sensitivity` by default.
+The primary v2 and ICC-bridge directories are never read as resume targets or
+overwritten by this module.
+
+Use separate output directories for legacy, v2, and bridge runs. Their
+condition identifiers do not overlap, but separate directories also keep
+aggregate manifests and progress files easy to audit.
+
+Study 5 can be submitted on eight array tasks at the default chunk size:
+
+```bash
+sbatch --array=1-8%8 \
+  --export=ALL,VIG_HALLQUIST_STUDY=5,VIG_HALLQUIST_N_SIM=1000,VIG_HALLQUIST_OUT_DIR=outputs/vig_hallquist_study5 \
+  vig_hallquist_2026/slurm/vig_hallquist_condition_array.sbatch
+```
+
+Condition files include a `pipeline_version` field. Resume mode skips a
+condition only when the file uses the current standardized-beta pipeline
+version, contains the complete expected method set, and has exactly the
+requested replication IDs. Older files or files produced with a different
+`n_sim` are rerun rather than silently reused.
+
+Every run also writes a chunk-specific `*_run_metadata.csv`. This one-row file
+records the Git commit and dirty-worktree flag, pipeline version, requested
+replications and cores, selector and condition range, R and key package
+versions, Mplus executable/version, SLURM job/array identifiers, start time,
+and host. Bridge runs additionally write the deterministic, standalone
+`icc_posterior_reliability_crosswalk_v1.csv` beside the other outputs. Each
+replication row stores `replication_seed`, making paired-stream reconstruction
+and audit possible without relying on undocumented seed arithmetic.
+
+After an array completes, run one unchunked resume pass to rebuild aggregate
+files from all completed condition files without rerunning valid conditions:
+
+```bash
+Rscript vig_hallquist_2026/random_effects_structural_simulation.R \
+  1000 allv2 outputs/vig_hallquist_v2 1 NA NA NA 1
+```
+
+The aggregation pass must use the same `n_sim`, study selector, and output
+directory as the array run. For the ICC bridge, replace `allv2` and its output
+directory with `iccbridge` and `outputs/vig_hallquist_icc_bridge`. For the
+covariance-shape sensitivity bridge, use:
+
+```bash
+Rscript vig_hallquist_2026/random_effects_structural_simulation.R \
+  1000 ratiosensitivity outputs/vig_hallquist_variance_ratio_sensitivity \
+  1 NA NA NA 1
+```
+
+Each replication row now carries separate `point_eligible` and
+`interval_eligible` flags, their exclusion reasons, and the legacy
+`analysis_eligible` alias (which always means point eligibility). Condition
+summaries use the point denominator for bias, empirical SD, and RMSE, and the
+stricter interval denominator for SE and coverage calculations. They report
+both conditional coverage/rejection and the corresponding joint probability
+over all attempted replications (`success_and_cover` and
+`success_and_reject`). The same files also include Monte Carlo uncertainty for
+bias and binomial rates; mean/median and tail SEs and interval widths;
+mean-SE/empirical-SD calibration; standardized-error diagnostics; directional
+and total Type I error in null cells; and power in non-null cells. This makes
+numerical failures visible rather than silently changing the denominator.
+
+Replication rows also retain diagnostics that cannot be reconstructed from
+condition summaries after the cluster-level data are discarded. For each
+Stage-1 process these include fitted marginal and intercept-residualized slope
+reliability; the true-slope/BLUP correlation and $R^2$; BLUP and corrected-score
+bias/RMSE; means and ranges for all four entries of $\Lambda$, all unique
+entries of $\Theta$, posterior covariance, and corrected-score error
+covariance; and fitted-$G$ boundary diagnostics. The 2S-PA rows additionally
+store the unscaled focal path/SE and fitted latent intercept/slope covariance,
+correlation, minimum eigenvalue, and boundary flag. MSEM rows carry analogous
+raw-path, latent-variance, covariance, and boundary diagnostics. Condition
+summaries average these replication-level audit quantities so overcoverage can
+be separated into fitted latent-variance inflation, structural-SE inflation,
+or a small boundary-adjacent subset.
+
+At 1,000 replications, the combined design produces approximately 19.8 million
+method rows. The runner therefore does not load or materialize one monolithic
+replication table when the expected result exceeds two million rows. It instead
+combines the condition-level summary files and writes a
+`*_condition_replication_index.csv` pointing to the authoritative compressed
+condition files. Small smoke and chunk runs still receive aggregate replication
+files. The threshold can be overridden with
+`VIG_HALLQUIST_MAX_AGGREGATE_ROWS`, including `Inf` when a machine has enough
+memory to materialize the complete table.

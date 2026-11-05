@@ -1,0 +1,1203 @@
+---
+title: "VH Study 4v2: Heterogeneous Cluster Information"
+author: "Michael Hallquist and Zach Vig"
+date: "26 August 2026"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: true
+    embed-resources: true
+    html-math-method: katex
+params:
+  output_dir: "outputs/vig_hallquist_v2"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE, warning = FALSE, message = FALSE,
+  fig.align = "center", dpi = 120, out.width = "100%"
+)
+
+suppressPackageStartupMessages({
+  library(data.table)
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(knitr)
+  library(scales)
+})
+
+input_path <- tryCatch(knitr::current_input(dir = TRUE), error = function(e) "")
+analysis_dir <- if (nzchar(input_path)) {
+  dirname(normalizePath(input_path, mustWork = FALSE))
+} else {
+  getwd()
+}
+repo_root <- normalizePath(file.path(analysis_dir, "..", ".."), mustWork = TRUE)
+resolve_repo_path <- function(path) {
+  if (grepl("^/", path)) path else file.path(repo_root, path)
+}
+source(
+  file.path(repo_root, "vig_hallquist_2026", "vh_designs.R"),
+  local = knitr::knit_global()
+)
+
+output_dir <- resolve_repo_path(params$output_dir)
+condition_dir <- file.path(output_dir, "conditions")
+canonical_counts <- study_condition_counts()
+canonical_offsets <- c(0L, cumsum(canonical_counts)[-length(canonical_counts)])
+names(canonical_offsets) <- names(canonical_counts)
+expected_ids <- canonical_offsets[["study4v2"]] +
+  seq_len(canonical_counts[["study4v2"]])
+summary_paths <- file.path(
+  condition_dir,
+  sprintf("condition_%04d_summary.csv", expected_ids)
+)
+missing_summary_paths <- summary_paths[!file.exists(summary_paths)]
+if (length(missing_summary_paths) > 0L) {
+  stop(
+    "Study 4v2 is incomplete: missing ", length(missing_summary_paths),
+    " condition summaries. First missing file: ", missing_summary_paths[[1]]
+  )
+}
+
+cell_metrics <- data.table::rbindlist(
+  lapply(summary_paths, data.table::fread),
+  fill = TRUE,
+  use.names = TRUE
+) %>%
+  tibble::as_tibble() %>%
+  filter(.data$study == "study4v2") %>%
+  mutate(
+    is_falsification_control = dplyr::coalesce(
+      .data$is_falsification_control,
+      FALSE
+    ),
+    sd_standardized_error = suppressWarnings(
+      as.numeric(.data$sd_standardized_error)
+    )
+  )
+
+expected_method_names <- c(
+  "oracle_dual", "naive_dual_blup", "closed_form_dual",
+  "fuller_closed_form", "fuller_book_preliminary_closed_form",
+  "fuller_book_closed_form", "fuller_average_measurement",
+  "fuller_alpha_stepdown_closed_form", "lai_2spa", "lai_2spaa", "msem"
+)
+expected_method_cells <- tidyr::crossing(
+  condition_id = expected_ids,
+  method = expected_method_names
+)
+observed_method_cells <- cell_metrics %>%
+  count(.data$condition_id, .data$method, name = "summary_rows")
+missing_method_cells <- dplyr::anti_join(
+  expected_method_cells,
+  observed_method_cells,
+  by = c("condition_id", "method")
+)
+unexpected_method_cells <- dplyr::anti_join(
+  observed_method_cells,
+  expected_method_cells,
+  by = c("condition_id", "method")
+)
+v2_contract_ok <-
+  n_distinct(cell_metrics$condition_id) == length(expected_ids) &&
+  nrow(missing_method_cells) == 0L &&
+  nrow(unexpected_method_cells) == 0L &&
+  all(observed_method_cells$summary_rows == 1L) &&
+  all(cell_metrics$n_rep == 1000L) &&
+  all(cell_metrics$study_version == "v2") &&
+  all(cell_metrics$calibration_version == "shape_preserving_v2") &&
+  all(cell_metrics$covariance_shape_fixed %in% TRUE) &&
+  all(cell_metrics$slope_intercept_variance_ratio == 1)
+if (!v2_contract_ok) {
+  stop(
+    "Refusing to render: Study 4v2 summaries violate the v2-only ",
+    "completion, method, replication, or calibration contract."
+  )
+}
+summary_file_info <- file.info(summary_paths)
+summary_artifact_oldest <- min(summary_file_info$mtime)
+summary_artifact_newest <- max(summary_file_info$mtime)
+
+method_labels <- c(
+  oracle_dual = "Oracle",
+  naive_dual_blup = "Naive dual BLUP",
+  closed_form_dual = "Unshrunk-score OLS",
+  fuller_closed_form = "Fuller (row-specific)",
+  fuller_book_preliminary_closed_form = "Fuller (book preliminary)",
+  fuller_book_closed_form = "Fuller (book equations)",
+  fuller_average_measurement = "Fuller (average measurement)",
+  fuller_alpha_stepdown_closed_form = "Fuller (alpha-stepdown)",
+  lai_2spa = "Lai 2S-PA (row-specific)",
+  lai_2spaa = "Lai 2S-PAA (average)",
+  msem = "MSEM"
+)
+stopifnot(setequal(names(method_labels), expected_method_names))
+
+profile_labels <- c(
+  homogeneous = "Homogeneous",
+  moderate = "Moderate heterogeneity",
+  severe = "Severe heterogeneity",
+  severe_information_matched = "Slope-information control"
+)
+profile_palette <- c(
+  "Homogeneous" = "#4E79A7",
+  "Moderate heterogeneity" = "#F28E2B",
+  "Severe heterogeneity" = "#E15759",
+  "Slope-information control" = "#59A14F"
+)
+primary_methods <- c(
+  "oracle_dual", "fuller_closed_form", "fuller_average_measurement",
+  "lai_2spa", "lai_2spaa", "msem"
+)
+diagnostic_methods <- c("naive_dual_blup", "closed_form_dual")
+fuller_methods <- c(
+  "fuller_closed_form", "fuller_alpha_stepdown_closed_form",
+  "fuller_book_preliminary_closed_form", "fuller_book_closed_form"
+)
+
+cell_metrics <- cell_metrics %>%
+  mutate(
+    method_label = factor(
+      unname(method_labels[.data$method]),
+      levels = unname(method_labels)
+    ),
+    profile_label = factor(
+      unname(profile_labels[.data$information_profile]),
+      levels = unname(profile_labels)
+    ),
+    reliability_label = factor(
+      paste0("R = ", sprintf("%.2f", .data$target_reliability)),
+      levels = paste0("R = ", sprintf("%.2f", c(.25, .5, .8)))
+    )
+  )
+
+pooled_mc_se <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) == 0L) return(NA_real_)
+  sqrt(sum(x^2)) / length(x)
+}
+fmt_pct <- function(x, accuracy = .1) percent(x, accuracy = accuracy)
+fmt_num <- function(x, digits = 3) formatC(x, digits = digits, format = "f")
+theme_vh <- function() {
+  theme_bw(base_size = 10) +
+    theme(
+      panel.grid.minor = element_blank(),
+      legend.position = "bottom",
+      strip.background = element_rect(fill = "grey95", colour = "grey75")
+    )
+}
+
+factorial_cells <- cell_metrics %>%
+  filter(!.data$is_falsification_control)
+control_cells <- cell_metrics %>%
+  filter(.data$is_falsification_control)
+
+performance_grid <- factorial_cells %>%
+  filter(.data$standardized_beta_target > 0) %>%
+  group_by(
+    .data$method, .data$method_label, .data$information_profile,
+    .data$profile_label, .data$num_clus, .data$target_reliability,
+    .data$reliability_label
+  ) %>%
+  summarise(
+    cells = n(),
+    eligibility = mean(.data$interval_eligibility, na.rm = TRUE),
+    bias = mean(.data$bias, na.rm = TRUE),
+    bias_mc_se = pooled_mc_se(.data$mc_se_bias),
+    bias_mc_low = .data$bias - qnorm(.975) * .data$bias_mc_se,
+    bias_mc_high = .data$bias + qnorm(.975) * .data$bias_mc_se,
+    coverage = mean(.data$coverage, na.rm = TRUE),
+    coverage_mc_se = pooled_mc_se(.data$coverage_mc_se),
+    coverage_mc_low = pmax(0, .data$coverage - qnorm(.975) * .data$coverage_mc_se),
+    coverage_mc_high = pmin(1, .data$coverage + qnorm(.975) * .data$coverage_mc_se),
+    success_and_cover = mean(.data$success_and_cover, na.rm = TRUE),
+    se_ratio = median(
+      .data$mean_se_to_interval_empirical_sd,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  )
+
+null_grid <- factorial_cells %>%
+  filter(.data$standardized_beta_target == 0) %>%
+  group_by(
+    .data$method, .data$method_label, .data$information_profile,
+    .data$profile_label, .data$num_clus, .data$target_reliability,
+    .data$reliability_label
+  ) %>%
+  summarise(
+    cells = n(),
+    eligibility = mean(.data$interval_eligibility, na.rm = TRUE),
+    bias = mean(.data$bias, na.rm = TRUE),
+    type1_error = mean(.data$type1_error, na.rm = TRUE),
+    type1_mc_se = pooled_mc_se(.data$type1_error_mc_se),
+    type1_mc_low = pmax(0, .data$type1_error - qnorm(.975) * .data$type1_mc_se),
+    type1_mc_high = pmin(1, .data$type1_error + qnorm(.975) * .data$type1_mc_se),
+    operational_type1_error = mean(
+      .data$operational_type1_error,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  )
+
+method_summary <- factorial_cells %>%
+  filter(.data$standardized_beta_target > 0) %>%
+  group_by(.data$method, .data$method_label) %>%
+  summarise(
+    cells = n(),
+    eligibility = mean(.data$interval_eligibility, na.rm = TRUE),
+    bias = mean(.data$bias, na.rm = TRUE),
+    absolute_bias = mean(abs(.data$bias), na.rm = TRUE),
+    coverage = mean(.data$coverage, na.rm = TRUE),
+    success_and_cover = mean(.data$success_and_cover, na.rm = TRUE),
+    median_se_ratio = median(
+      .data$mean_se_to_interval_empirical_sd,
+      na.rm = TRUE
+    ),
+    cells_below_nominal = sum(.data$coverage_mc_high < .95, na.rm = TRUE),
+    cells_above_nominal = sum(.data$coverage_mc_low > .95, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+null_summary <- factorial_cells %>%
+  filter(.data$standardized_beta_target == 0) %>%
+  group_by(.data$method, .data$method_label) %>%
+  summarise(
+    cells = n(),
+    eligibility = mean(.data$interval_eligibility, na.rm = TRUE),
+    bias = mean(.data$bias, na.rm = TRUE),
+    type1_error = mean(.data$type1_error, na.rm = TRUE),
+    operational_type1_error = mean(
+      .data$operational_type1_error,
+      na.rm = TRUE
+    ),
+    coverage = mean(.data$coverage, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+metric_for <- function(summary, method, metric) {
+  value <- summary[summary$method == method, metric, drop = TRUE]
+  if (length(value) != 1L) NA_real_ else value
+}
+
+profile_calibration <- factorial_cells %>%
+  filter(.data$method == "oracle_dual") %>%
+  distinct(
+    .data$condition_id, .data$information_profile, .data$profile_label,
+    .data$target_reliability, .data$reliability_label,
+    .data$achieved_reliability,
+    .data$reliability_min, .data$reliability_max,
+    .data$reliability_sd, .data$num_clus
+  )
+
+pair_cells <- factorial_cells %>%
+  filter(
+    .data$standardized_beta_target > 0,
+    .data$method %in% c(
+      "fuller_closed_form", "fuller_average_measurement",
+      "lai_2spa", "lai_2spaa"
+    )
+  ) %>%
+  select(
+    .data$condition_id, .data$information_profile, .data$profile_label,
+    .data$target_reliability, .data$num_clus, .data$method,
+    .data$bias, .data$coverage, .data$interval_eligibility
+  ) %>%
+  pivot_wider(
+    names_from = method,
+    values_from = c(bias, coverage, interval_eligibility)
+  ) %>%
+  mutate(
+    fuller_bias_difference =
+      .data$bias_fuller_average_measurement - .data$bias_fuller_closed_form,
+    fuller_coverage_difference =
+      .data$coverage_fuller_average_measurement - .data$coverage_fuller_closed_form,
+    lai_bias_difference = .data$bias_lai_2spaa - .data$bias_lai_2spa,
+    lai_coverage_difference = .data$coverage_lai_2spaa - .data$coverage_lai_2spa
+  )
+```
+
+# Executive summary
+
+Study 4v2 asks whether methods that use row-specific Stage-1 uncertainty retain
+their advantage when clusters differ sharply in measurement information. The
+amended design uses the same shape-preserving posterior-reliability calibrator
+as Studies 1v2--3v2, then varies the distribution of cluster sizes while
+holding the target mean reliability interpretable.
+
+All 111 planned conditions are complete: 108 factorial cells plus three
+slope-information controls. Each condition contains 1,000 replications and all
+11 methods. This report has a strict v2 guard and cannot silently read the
+legacy Study 4 cache.
+
+The main results are:
+
+1. Row-specific stabilized Fuller is nearly centered (mean bias
+   `r fmt_num(metric_for(method_summary, "fuller_closed_form", "bias"))`)
+   with `r fmt_pct(metric_for(method_summary, "fuller_closed_form", "coverage"))`
+   non-null conditional coverage and complete interval eligibility.
+2. Fuller is mildly conservative under the null: average Type I error is
+   `r fmt_pct(metric_for(null_summary, "fuller_closed_form", "type1_error"))`.
+   Lai 2S-PA is similarly conservative, while MSEM is approximately nominal.
+3. Averaging measurement information is not harmless. Average-measurement
+   Fuller has more negative bias and lower coverage than row-specific Fuller,
+   especially as information becomes heterogeneous. Its success-and-cover
+   probability is also reduced by incomplete eligibility.
+4. Lai's averaging comparison is more nuanced. 2S-PAA reduces the positive
+   bias of row-specific 2S-PA on average, but has lower coverage. Both have
+   incomplete fit eligibility, so conditional coverage overstates operational
+   success.
+5. The severe slope-information control behaves more like homogeneous
+   measurement than the ordinary severe profile. Unequal cluster counts alone
+   are therefore not the operative mechanism; heterogeneity in slope
+   information and the full posterior-error matrices matters.
+
+# Scientific motivation
+
+Real repeated-measures data rarely give every person the same information.
+Participants miss assessments, enter at different times, or contribute
+measurements at time points with different leverage for estimating a slope.
+Two people can therefore have the same kind of latent slope but very different
+posterior uncertainty. Study 4 asks whether Stage 2 must retain that
+person-specific uncertainty or whether replacing it by one average matrix is
+adequate.
+
+The structural model is the Study 2 predictor model,
+
+$$
+y_{it}=\gamma_0+\gamma_1x_{it}+u_{0i}+u_{1i}x_{it}+e_{it},
+\qquad
+z_i=\beta_0+\beta_{0u}u_{0i}+\beta u_{1i}+\varepsilon_i,
+$$
+
+but the cluster-specific observation schedules vary. This isolates a practical
+question that a homogeneous design cannot answer: whether the *distribution*
+of slope information matters even when the mean reliability target is held
+fixed.
+
+# Design and v2-only completion contract
+
+The factorial portion crosses three posterior-reliability targets, two
+intercept--slope correlations, three information profiles, three cluster counts,
+and null versus non-null structural effects. The three additional control
+conditions use severely unequal cluster sizes but match slope information.
+
+The method set is designed around the row-specific-versus-average contrast:
+
+- **Oracle**, **naive dual-BLUP OLS**, **unshrunk-score OLS**, and **MSEM** have
+  the same benchmark or negative-control roles as in Study 2.
+- **Fuller (row-specific)** carries each cluster's Stage-1 error matrix into the
+  correction; **Fuller (average measurement)** replaces those matrices by one
+  average. The latter is a deliberate approximation, not the proposed method.
+- **Lai 2S-PA (row-specific)** and **Lai 2S-PAA (average)** provide the analogous
+  contrast in the latent path-analysis framework.
+- Fuller book-equation and alpha-stepdown variants remain variance-tail and
+  algebra sensitivity checks.
+
+```{r completion-table}
+tibble::tibble(
+  item = c(
+    "Expected conditions", "Observed conditions", "Factorial conditions",
+    "Slope-information controls", "Methods per condition",
+    "Replications per condition", "Study version", "Calibration version",
+    "Covariance shape fixed", "Slope/intercept variance ratio",
+    "Summary artifacts read", "Oldest summary artifact (local time)",
+    "Newest summary artifact (local time)"
+  ),
+  value = c(
+    length(expected_ids), n_distinct(cell_metrics$condition_id),
+    n_distinct(factorial_cells$condition_id),
+    n_distinct(control_cells$condition_id), length(expected_method_names),
+    unique(cell_metrics$n_rep), unique(cell_metrics$study_version),
+    unique(cell_metrics$calibration_version),
+    all(cell_metrics$covariance_shape_fixed),
+    unique(cell_metrics$slope_intercept_variance_ratio),
+    length(summary_paths),
+    format(summary_artifact_oldest, tz = "America/New_York"),
+    format(summary_artifact_newest, tz = "America/New_York")
+  )
+) %>%
+  kable(align = c("l", "r"))
+```
+
+The report reads these exact condition summaries directly, with no legacy or
+consolidated-cache fallback.
+
+{{< include _vh_v2_metric_guide.qmd >}}
+
+# Reliability profiles and manipulation checks
+
+```{r reliability-profile-plot, fig.width=11, fig.height=7}
+profile_calibration %>%
+  ggplot(aes(
+    x = factor(.data$num_clus),
+    y = .data$achieved_reliability,
+    ymin = .data$reliability_min,
+    ymax = .data$reliability_max,
+    colour = .data$profile_label
+  )) +
+  geom_hline(
+    aes(yintercept = .data$target_reliability),
+    linetype = 2,
+    colour = "grey55"
+  ) +
+  geom_linerange(position = position_dodge(width = .45), alpha = .6) +
+  geom_point(position = position_dodge(width = .45), size = 2) +
+  facet_wrap(~ reliability_label, nrow = 1) +
+  scale_y_continuous(limits = c(0, 1), labels = percent_format(accuracy = 1)) +
+  scale_colour_manual(values = profile_palette) +
+  labs(
+    x = "Number of clusters",
+    y = "Mean and range of cluster-specific reliability",
+    colour = NULL,
+    title = "Profiles share a mean target but differ in reliability dispersion",
+    subtitle = "Points are achieved means; vertical ranges show the least and most informative clusters"
+  ) +
+  theme_vh()
+```
+
+This is the key Study 4 manipulation. The mean target is comparable across
+profiles, while the severe condition contains clusters with very different
+posterior uncertainties. The row-specific methods use those differences; the
+average-measurement variants deliberately discard them.
+
+# Bias
+
+```{r primary-bias-plot, fig.width=12, fig.height=9}
+performance_grid %>%
+  filter(.data$method %in% primary_methods) %>%
+  ggplot(aes(
+    x = .data$target_reliability,
+    y = .data$bias,
+    ymin = .data$bias_mc_low,
+    ymax = .data$bias_mc_high,
+    colour = .data$profile_label,
+    linetype = factor(.data$num_clus),
+    group = interaction(.data$profile_label, .data$num_clus)
+  )) +
+  geom_hline(yintercept = 0, linetype = 2, colour = "grey40") +
+  geom_errorbar(width = .015, alpha = .25, linewidth = .35) +
+  geom_line(alpha = .6) +
+  geom_point(size = 1.8) +
+  facet_wrap(~ method_label, scales = "free_y", ncol = 2) +
+  scale_x_continuous(breaks = c(.25, .5, .8)) +
+  scale_colour_manual(values = profile_palette) +
+  labs(
+    x = "Target marginal posterior slope reliability",
+    y = "Mean bias with 95% Monte Carlo CI",
+    colour = NULL,
+    linetype = "Clusters",
+    title = "Row-specific Fuller remains centered under heterogeneous information",
+    subtitle = "Each point averages three rho cells; free y-scales preserve method-specific patterns"
+  ) +
+  theme_vh()
+```
+
+Row-specific Fuller changes little as reliability dispersion increases.
+Average-measurement Fuller is more negatively biased, consistent with replacing
+heterogeneous measurement-error matrices by a single average correction. 2S-PA
+has positive bias, whereas averaging in 2S-PAA shifts the mean bias toward zero
+but does not uniformly improve interval behavior. MSEM also has modest positive
+bias in difficult cells.
+
+## Negative-control estimators
+
+```{r diagnostic-bias-plot, fig.width=10, fig.height=6.5}
+factorial_cells %>%
+  filter(
+    .data$method %in% diagnostic_methods,
+    .data$standardized_beta_target > 0
+  ) %>%
+  group_by(
+    .data$method, .data$method_label, .data$target_reliability,
+    .data$reliability_label, .data$profile_label
+  ) %>%
+  summarise(
+    median_cell_bias = median(.data$bias, na.rm = TRUE),
+    q10 = quantile(.data$bias, .10, na.rm = TRUE),
+    q90 = quantile(.data$bias, .90, na.rm = TRUE),
+    max_absolute_cell_bias = max(abs(.data$bias), na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(
+    x = .data$target_reliability,
+    y = .data$median_cell_bias,
+    ymin = .data$q10,
+    ymax = .data$q90,
+    colour = .data$profile_label
+  )) +
+  geom_hline(yintercept = 0, linetype = 2, colour = "grey40") +
+  geom_linerange(alpha = .5, position = position_dodge(width = .035)) +
+  geom_point(size = 1.8, position = position_dodge(width = .035)) +
+  facet_wrap(~ method_label, scales = "free_y") +
+  scale_x_continuous(breaks = c(.25, .5, .8)) +
+  scale_colour_manual(values = profile_palette) +
+  labs(
+    x = "Target marginal posterior slope reliability",
+    y = "Median cell bias (10th--90th percentile)",
+    colour = NULL,
+    title = "Unshrinking alone remains attenuated; dual BLUP regression has extreme tails",
+    subtitle = "Robust summaries prevent rare coefficient explosions from compressing the other methods"
+  ) +
+  theme_vh()
+```
+
+As in Study 2v2, the naive dual-BLUP estimator has rare enormous coefficients
+from near-collinearity. Those failures remain in the summaries but are not
+allowed to set a common plot scale. Unshrunk-score OLS shows the expected
+attenuation because score correction without a Stage-2 measurement-error
+correction is insufficient for a predictor.
+
+# Coverage and SE calibration
+
+```{r primary-coverage-plot, fig.width=12, fig.height=9}
+performance_grid %>%
+  filter(.data$method %in% primary_methods) %>%
+  ggplot(aes(
+    x = .data$target_reliability,
+    y = .data$coverage,
+    ymin = .data$coverage_mc_low,
+    ymax = .data$coverage_mc_high,
+    colour = .data$profile_label,
+    linetype = factor(.data$num_clus),
+    group = interaction(.data$profile_label, .data$num_clus)
+  )) +
+  geom_hline(yintercept = .95, linetype = 2, colour = "grey35") +
+  geom_errorbar(width = .015, alpha = .25, linewidth = .35) +
+  geom_line(alpha = .6) +
+  geom_point(size = 1.8) +
+  facet_wrap(~ method_label, ncol = 2) +
+  scale_x_continuous(breaks = c(.25, .5, .8)) +
+  scale_y_continuous(limits = c(.75, 1), labels = percent_format(accuracy = 1)) +
+  scale_colour_manual(values = profile_palette) +
+  labs(
+    x = "Target marginal posterior slope reliability",
+    y = "Conditional 95% CI coverage",
+    colour = NULL,
+    linetype = "Clusters",
+    title = "Row-specific Fuller is more stable than average-measurement Fuller",
+    subtitle = "Conditional 2S-PA coverage is often conservative but excludes ineligible fits"
+  ) +
+  theme_vh()
+```
+
+Row-specific Fuller averages
+`r fmt_pct(metric_for(method_summary, "fuller_closed_form", "coverage"))`
+coverage, compared with
+`r fmt_pct(metric_for(method_summary, "fuller_average_measurement", "coverage"))`
+for average-measurement Fuller. The difference is not merely cosmetic: the
+average method is also less often eligible. Row-specific 2S-PA has high
+conditional coverage, but only
+`r fmt_pct(metric_for(method_summary, "lai_2spa", "success_and_cover"))`
+of all non-null replications both yield an eligible interval and cover.
+
+```{r se-calibration-plot, fig.width=12, fig.height=8}
+performance_grid %>%
+  filter(.data$method %in% primary_methods) %>%
+  ggplot(aes(
+    x = .data$target_reliability,
+    y = .data$se_ratio,
+    colour = .data$profile_label,
+    linetype = factor(.data$num_clus),
+    group = interaction(.data$profile_label, .data$num_clus)
+  )) +
+  geom_hline(yintercept = 1, linetype = 2, colour = "grey35") +
+  geom_line(alpha = .6) +
+  geom_point(size = 1.8) +
+  facet_wrap(~ method_label, ncol = 2) +
+  scale_x_continuous(breaks = c(.25, .5, .8)) +
+  scale_y_continuous(limits = c(.7, 1.35)) +
+  scale_colour_manual(values = profile_palette) +
+  labs(
+    x = "Target marginal posterior slope reliability",
+    y = "Median condition-level SE ratio",
+    colour = NULL,
+    linetype = "Clusters",
+    title = "Typical SE scale is close to one for the main methods",
+    subtitle = paste(
+      "Each ratio is mean reported SE / empirical sampling SD;",
+      "lines connect reliability levels within a profile and N"
+    )
+  ) +
+  theme_vh()
+```
+
+```{r bias-se-mechanism-plot, fig.width=12, fig.height=8}
+factorial_cells %>%
+  filter(
+    .data$method %in% primary_methods,
+    .data$standardized_beta_target > 0
+  ) %>%
+  ggplot(aes(
+    x = .data$bias,
+    y = .data$mean_se_to_interval_empirical_sd,
+    colour = .data$coverage,
+    shape = .data$profile_label
+  )) +
+  geom_vline(xintercept = 0, linetype = 2, colour = "grey45") +
+  geom_hline(yintercept = 1, linetype = 2, colour = "grey45") +
+  geom_point(alpha = .6, size = 1.35) +
+  facet_wrap(~ method_label, scales = "free", ncol = 2) +
+  scale_colour_viridis_c(
+    option = "C", limits = c(0, 1),
+    labels = percent_format(accuracy = 1)
+  ) +
+  labs(
+    x = "Condition-level mean bias",
+    y = "Condition-level mean-SE / empirical-SD ratio",
+    colour = "Conditional coverage",
+    shape = NULL,
+    title = "Heterogeneity can affect centering without changing typical SE scale",
+    subtitle = "Free scales separate method-specific mechanisms and retain difficult cells"
+  ) +
+  theme_vh()
+```
+
+# Row-specific versus average measurement information
+
+```{r row-average-difference-plot, fig.width=11, fig.height=7.5}
+pair_cells %>%
+  group_by(
+    .data$profile_label, .data$target_reliability,
+    .data$num_clus
+  ) %>%
+  summarise(
+    `Fuller: average - row-specific` = mean(
+      .data$fuller_coverage_difference,
+      na.rm = TRUE
+    ),
+    `Lai: average - row-specific` = mean(
+      .data$lai_coverage_difference,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(
+    cols = c(
+      `Fuller: average - row-specific`,
+      `Lai: average - row-specific`
+    ),
+    names_to = "comparison",
+    values_to = "coverage_difference"
+  ) %>%
+  ggplot(aes(
+    x = .data$target_reliability,
+    y = .data$coverage_difference,
+    colour = .data$profile_label,
+    linetype = factor(.data$num_clus),
+    group = interaction(.data$profile_label, .data$num_clus)
+  )) +
+  geom_hline(yintercept = 0, linetype = 2, colour = "grey40") +
+  geom_line(alpha = .6) +
+  geom_point(size = 1.8) +
+  facet_wrap(~ comparison, nrow = 1) +
+  scale_x_continuous(breaks = c(.25, .5, .8)) +
+  scale_y_continuous(labels = percent_format(accuracy = .1)) +
+  scale_colour_manual(values = profile_palette) +
+  labs(
+    x = "Target marginal posterior slope reliability",
+    y = "Conditional coverage difference",
+    colour = NULL,
+    linetype = "Clusters",
+    title = "Averaging measurement information changes the two methods differently",
+    subtitle = "Negative values favor the row-specific estimator"
+  ) +
+  theme_vh()
+```
+
+The Fuller comparison gives the cleanest support for the row-specific
+principle: its average-measurement approximation generally loses coverage and
+introduces negative bias as heterogeneity grows. Lai's comparison is not a
+simple dominance result. Averaging can reduce 2S-PA's positive bias, but it also
+changes coverage and does not repair fit eligibility. This distinction should
+be described as an estimator-specific consequence of averaging, not as a
+universal theorem that row-specific corrections improve every metric.
+
+# Type I error and operational performance
+
+```{r type1-plot, fig.width=12, fig.height=8}
+null_grid %>%
+  filter(.data$method %in% primary_methods) %>%
+  ggplot(aes(
+    x = .data$target_reliability,
+    y = .data$type1_error,
+    ymin = .data$type1_mc_low,
+    ymax = .data$type1_mc_high,
+    colour = .data$profile_label,
+    linetype = factor(.data$num_clus),
+    group = interaction(.data$profile_label, .data$num_clus)
+  )) +
+  geom_hline(yintercept = .05, linetype = 2, colour = "grey35") +
+  geom_errorbar(width = .015, alpha = .25, linewidth = .35) +
+  geom_line(alpha = .6) +
+  geom_point(size = 1.8) +
+  facet_wrap(~ method_label, ncol = 2) +
+  scale_x_continuous(breaks = c(.25, .5, .8)) +
+  scale_y_continuous(limits = c(0, .12), labels = percent_format(accuracy = .1)) +
+  scale_colour_manual(values = profile_palette) +
+  labs(
+    x = "Target marginal posterior slope reliability",
+    y = "Conditional Type I error",
+    colour = NULL,
+    linetype = "Clusters",
+    title = "Fuller and both 2S-PA variants overcover under the null",
+    subtitle = "MSEM and the oracle remain near the nominal 5% rejection rate"
+  ) +
+  theme_vh()
+```
+
+Null rejection makes the overcoverage evidence explicit. Row-specific Fuller,
+average Fuller, 2S-PA, and 2S-PAA all reject less than 5% on average. MSEM's
+average Type I error is
+`r fmt_pct(metric_for(null_summary, "msem", "type1_error"))`, compared with
+`r fmt_pct(metric_for(null_summary, "fuller_closed_form", "type1_error"))`
+for row-specific Fuller. Thus, Fuller protects more strongly against false
+positives, but its coverage advantage partly reflects conservative intervals.
+
+```{r conditional-operational-plot, fig.width=12, fig.height=8}
+performance_grid %>%
+  filter(.data$method %in% primary_methods) %>%
+  group_by(
+    .data$method, .data$method_label, .data$target_reliability,
+    .data$reliability_label
+  ) %>%
+  summarise(
+    conditional_coverage = mean(.data$coverage, na.rm = TRUE),
+    success_and_cover = mean(.data$success_and_cover, na.rm = TRUE),
+    eligibility = mean(.data$eligibility, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(
+    cols = c(conditional_coverage, success_and_cover),
+    names_to = "performance",
+    values_to = "rate"
+  ) %>%
+  mutate(
+    performance = factor(
+      .data$performance,
+      levels = c("conditional_coverage", "success_and_cover"),
+      labels = c("Conditional coverage", "Success-and-cover")
+    )
+  ) %>%
+  ggplot(aes(
+    x = .data$target_reliability,
+    y = .data$rate,
+    colour = .data$performance,
+    group = .data$performance
+  )) +
+  geom_hline(yintercept = .95, linetype = 2, colour = "grey50") +
+  geom_line() +
+  geom_point(size = 2) +
+  facet_wrap(~ method_label, ncol = 2) +
+  scale_x_continuous(breaks = c(.25, .5, .8)) +
+  scale_y_continuous(limits = c(.65, 1), labels = percent_format(accuracy = 1)) +
+  scale_colour_manual(values = c("#4E79A7", "#E15759")) +
+  labs(
+    x = "Target marginal posterior slope reliability",
+    y = "Probability",
+    colour = NULL,
+    title = "Conditional coverage is insufficient when fit eligibility differs",
+    subtitle = "The operational gap is largest for the 2S-PA and average-measurement methods"
+  ) +
+  theme_vh()
+```
+
+# Direct comparison: row-specific stabilized Fuller, Lai 2S-PA, and MSEM
+
+The primary publication comparison uses the three methods that propagate
+row-specific information without deliberately averaging it away. Row-specific
+Fuller corrects the Stage-2 moments using each cluster's Stage-1 error matrix;
+Lai 2S-PA represents the cluster-specific scores and uncertainties in an OpenMx
+latent-variable model; and MSEM estimates the repeated-measures and structural
+models jointly in Mplus. Because all three methods see the same simulated
+sample in each condition, matched-cell differences isolate estimator behavior
+from changes in reliability, information heterogeneity, cluster count, and
+intercept--slope correlation.
+
+```{r direct-comparison-setup, include=FALSE}
+comparison_methods <- c("fuller_closed_form", "lai_2spa", "msem")
+comparison_labels <- c(
+  fuller_closed_form = "Fuller (row-specific)",
+  lai_2spa = "Lai 2S-PA (row-specific)",
+  msem = "MSEM"
+)
+
+comparison_nonnull <- factorial_cells %>%
+  filter(
+    .data$method %in% comparison_methods,
+    .data$standardized_beta_target > 0
+  ) %>%
+  group_by(
+    .data$method, .data$information_profile, .data$profile_label
+  ) %>%
+  summarise(
+    cells = n(),
+    mean_bias = mean(.data$bias, na.rm = TRUE),
+    mean_absolute_bias = mean(abs(.data$bias), na.rm = TRUE),
+    conditional_coverage = mean(.data$coverage, na.rm = TRUE),
+    interval_eligibility = mean(.data$interval_eligibility, na.rm = TRUE),
+    success_and_cover = mean(.data$success_and_cover, na.rm = TRUE),
+    median_se_ratio = median(
+      .data$mean_se_to_interval_empirical_sd,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  )
+
+comparison_null <- factorial_cells %>%
+  filter(
+    .data$method %in% comparison_methods,
+    .data$standardized_beta_target == 0
+  ) %>%
+  group_by(
+    .data$method, .data$information_profile, .data$profile_label
+  ) %>%
+  summarise(
+    conditional_type1 = mean(.data$type1_error, na.rm = TRUE),
+    operational_type1 = mean(.data$operational_type1_error, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+comparison_summary <- comparison_nonnull %>%
+  left_join(
+    comparison_null,
+    by = c("method", "information_profile", "profile_label")
+  ) %>%
+  mutate(
+    method_label = factor(
+      unname(comparison_labels[.data$method]),
+      levels = unname(comparison_labels)
+    )
+  )
+
+comparison_metric <- function(method, profile, metric) {
+  value <- comparison_summary[
+    comparison_summary$method == method &
+      comparison_summary$information_profile == profile,
+    metric,
+    drop = TRUE
+  ]
+  if (length(value) != 1L) NA_real_ else value
+}
+
+comparison_wide <- factorial_cells %>%
+  filter(
+    .data$method %in% comparison_methods,
+    .data$standardized_beta_target > 0
+  ) %>%
+  select(
+    .data$condition_id, .data$information_profile, .data$profile_label,
+    .data$target_reliability, .data$method, .data$bias, .data$coverage,
+    .data$interval_eligibility, .data$mean_se_to_interval_empirical_sd
+  ) %>%
+  pivot_wider(
+    names_from = .data$method,
+    values_from = c(
+      bias, coverage, interval_eligibility,
+      mean_se_to_interval_empirical_sd
+    )
+  )
+
+make_paired_comparison <- function(wide, comparator_key, comparator_label) {
+  tibble::tibble(
+    comparator = comparator_label,
+    information_profile = wide$information_profile,
+    profile_label = wide$profile_label,
+    target_reliability = wide$target_reliability,
+    absolute_bias_difference =
+      abs(wide$bias_fuller_closed_form) -
+      abs(wide[[paste0("bias_", comparator_key)]]),
+    absolute_coverage_error_difference =
+      abs(wide$coverage_fuller_closed_form - .95) -
+      abs(wide[[paste0("coverage_", comparator_key)]] - .95),
+    interval_failure_difference =
+      (1 - wide$interval_eligibility_fuller_closed_form) -
+      (1 - wide[[paste0("interval_eligibility_", comparator_key)]]),
+    absolute_log_se_error_difference =
+      abs(log(wide$mean_se_to_interval_empirical_sd_fuller_closed_form)) -
+      abs(log(wide[[paste0(
+        "mean_se_to_interval_empirical_sd_", comparator_key
+      )]]))
+  )
+}
+
+paired_comparisons <- bind_rows(
+  make_paired_comparison(
+    comparison_wide,
+    "lai_2spa",
+    "Lai 2S-PA (row-specific)"
+  ),
+  make_paired_comparison(comparison_wide, "msem", "MSEM")
+) %>%
+  pivot_longer(
+    cols = c(
+      absolute_bias_difference,
+      absolute_coverage_error_difference,
+      interval_failure_difference,
+      absolute_log_se_error_difference
+    ),
+    names_to = "criterion",
+    values_to = "fuller_minus_comparator"
+  ) %>%
+  mutate(
+    criterion = factor(
+      .data$criterion,
+      levels = c(
+        "absolute_bias_difference",
+        "absolute_coverage_error_difference",
+        "interval_failure_difference",
+        "absolute_log_se_error_difference"
+      ),
+      labels = c(
+        "Absolute bias",
+        "Absolute conditional-coverage error",
+        "Interval-failure probability",
+        "Absolute log(SE / empirical SD)"
+      )
+    )
+  ) %>%
+  filter(is.finite(.data$fuller_minus_comparator))
+```
+
+```{r direct-comparison-plot, fig.width=12, fig.height=9}
+paired_comparisons %>%
+  ggplot(aes(
+    x = .data$profile_label,
+    y = .data$fuller_minus_comparator,
+    fill = .data$comparator
+  )) +
+  geom_hline(yintercept = 0, linetype = 2, colour = "grey35") +
+  geom_boxplot(outlier.alpha = .18, width = .65) +
+  facet_grid(.data$criterion ~ .data$comparator, scales = "free_y") +
+  scale_fill_manual(values = c(
+    "Lai 2S-PA (row-specific)" = "#4E79A7",
+    "MSEM" = "#59A14F"
+  )) +
+  labs(
+    x = "Cluster-information profile",
+    y = "Fuller minus comparator (negative favors Fuller)",
+    fill = NULL,
+    title = "Fuller's clearest advantages are centering and interval availability",
+    subtitle = paste(
+      "Differences are computed within the same non-null design cell;",
+      "zero denotes equal performance"
+    )
+  ) +
+  theme_vh() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 20, hjust = 1)
+  )
+```
+
+The matched-cell comparison clarifies the tradeoff. Row-specific Fuller has
+complete interval eligibility in every primary condition and lower absolute
+bias than the two principal comparators in most cells. Lai 2S-PA often has
+competitive conditional coverage, but its probability of producing an
+eligible interval and covering is lower because difficult fits are excluded.
+MSEM is nearly always available and has null rejection closer to 5%, but its
+non-null bias and coverage are not uniformly better than Fuller's.
+
+```{r direct-comparison-table}
+comparison_summary %>%
+  transmute(
+    Method = .data$method_label,
+    Profile = .data$profile_label,
+    `Mean bias` = round(.data$mean_bias, 3),
+    `Mean |bias|` = round(.data$mean_absolute_bias, 3),
+    `Conditional coverage` = percent(
+      .data$conditional_coverage,
+      accuracy = .1
+    ),
+    `Interval eligible` = percent(.data$interval_eligibility, accuracy = .1),
+    `Success-and-cover` = percent(.data$success_and_cover, accuracy = .1),
+    `Median condition-level SE ratio` = round(.data$median_se_ratio, 3),
+    `Null Type I error` = percent(.data$conditional_type1, accuracy = .1),
+    `Operational null rejection` = percent(
+      .data$operational_type1,
+      accuracy = .1
+    )
+  ) %>%
+  arrange(.data$Profile, .data$Method) %>%
+  kable(align = c("l", "l", rep("r", 8)))
+```
+
+At severe heterogeneity, Fuller's success-and-cover probability is
+`r fmt_pct(comparison_metric("fuller_closed_form", "severe", "success_and_cover"))`,
+compared with
+`r fmt_pct(comparison_metric("lai_2spa", "severe", "success_and_cover"))`
+for row-specific Lai 2S-PA and
+`r fmt_pct(comparison_metric("msem", "severe", "success_and_cover"))`
+for MSEM. This operational contrast is the strongest direct evidence for
+propagating row-specific uncertainty with a correction that remains available.
+It does not imply uniform dominance: MSEM provides more nearly nominal null
+calibration, and the separate average-information analysis below addresses a
+different question about what is lost by replacing row-specific uncertainty
+with a common matrix.
+
+# Slope-information controls
+
+The three control conditions retain severe cluster-size imbalance but match
+slope information. They test whether unequal counts alone produce the
+row-specific-versus-average differences.
+
+```{r control-summary-table}
+control_cells %>%
+  filter(.data$method %in% primary_methods) %>%
+  transmute(
+    `Number of clusters` = .data$num_clus,
+    Method = .data$method_label,
+    Bias = round(.data$bias, 3),
+    `Conditional coverage` = percent(.data$coverage, accuracy = .1),
+    `Interval eligible` = percent(.data$interval_eligibility, accuracy = .1),
+    `Condition-level mean-SE / empirical-SD ratio` = round(
+      .data$mean_se_to_interval_empirical_sd,
+      3
+    )
+  ) %>%
+  arrange(.data$`Number of clusters`, .data$Method) %>%
+  kable(align = c("r", "l", "r", "r", "r", "r"))
+```
+
+The controls substantially narrow the row-versus-average discrepancy. This
+supports the intended mechanism: unequal cluster counts matter because they
+create heterogeneous posterior slope information, not merely because the data
+set contains small and large clusters.
+
+# Fuller variants
+
+```{r fuller-variant-plot, fig.width=11, fig.height=7}
+factorial_cells %>%
+  filter(
+    .data$method %in% fuller_methods,
+    .data$standardized_beta_target > 0
+  ) %>%
+  group_by(
+    .data$method, .data$method_label, .data$target_reliability,
+    .data$reliability_label
+  ) %>%
+  summarise(
+    coverage = mean(.data$coverage, na.rm = TRUE),
+    median_se_ratio = median(
+      .data$mean_se_to_interval_empirical_sd,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(
+    x = .data$median_se_ratio,
+    y = .data$coverage,
+    colour = .data$reliability_label
+  )) +
+  geom_vline(xintercept = 1, linetype = 2, colour = "grey45") +
+  geom_hline(yintercept = .95, linetype = 2, colour = "grey45") +
+  geom_point(size = 2) +
+  facet_wrap(~ method_label, scales = "free_x", ncol = 2) +
+  scale_x_log10() +
+  scale_y_continuous(limits = c(.82, 1), labels = percent_format(accuracy = 1)) +
+  scale_colour_manual(values = c(
+    "R = 0.25" = "#E15759", "R = 0.50" = "#F28E2B",
+    "R = 0.80" = "#4E79A7"
+  )) +
+  labs(
+    x = "Median condition-level SE ratio (log scale)",
+    y = "Conditional coverage",
+    colour = NULL,
+    title = "Stabilized Fuller controls the SE-tail behavior of the book variants",
+    subtitle = "Equation-faithful variants are retained as sensitivity analyses, not primary estimators"
+  ) +
+  theme_vh()
+```
+
+# Conclusions
+
+Study 4v2 supports a coherent message for the VH series. Posterior reliability
+can be manipulated while preserving latent covariance shape, and cluster-level
+heterogeneity can then be studied as a separate design feature. This is much
+easier to explain than changing only the slope variance and hoping that the
+resulting ICC, reliability, and covariance geometry remain comparable.
+
+The substantive conclusions are balanced:
+
+- Row-specific stabilized Fuller performs well under heterogeneous information.
+  It is nearly unbiased, has complete eligibility, and keeps typical SE scale
+  near the empirical sampling SD. Its null intervals are conservative, so the
+  evidence supports dependable false-positive control rather than exact
+  nominality.
+- Averaging Stage-1 error information can be consequential. For Fuller it
+  generally introduces attenuation and lower coverage as heterogeneity grows.
+  This directly supports carrying cluster-specific posterior uncertainty into
+  Stage 2.
+- The Lai comparison shows that row-specific information is not guaranteed to
+  improve every metric. 2S-PAA reduces average positive bias but has lower
+  coverage, and both Lai variants lose operational performance through fit
+  ineligibility.
+- MSEM remains a valuable benchmark with almost complete eligibility and
+  approximately nominal Type I error. Its modest positive bias and non-null
+  undercoverage in some difficult cells caution against treating it as an
+  infallible reference.
+- The slope-information controls show that the operative problem is not
+  unequal cluster size itself. It is heterogeneity in the measurement
+  information attached to the latent slope.
+
+For the paper, Study 4 should therefore be framed as evidence for preserving
+and propagating the full row-specific uncertainty structure. The primary
+Fuller estimator should be the corrected, stabilized implementation; the book
+and alpha-stepdown variants remain informative sensitivity analyses for how
+regularization changes SE tails.
+
+# Appendix
+
+## Compact method summaries
+
+```{r method-summary-table}
+method_summary %>%
+  transmute(
+    Method = .data$method_label,
+    Cells = .data$cells,
+    `Interval eligible` = percent(.data$eligibility, accuracy = .1),
+    `Mean bias` = round(.data$bias, 3),
+    `Mean |bias|` = round(.data$absolute_bias, 3),
+    `Conditional coverage` = percent(.data$coverage, accuracy = .1),
+    `Success-and-cover` = percent(.data$success_and_cover, accuracy = .1),
+    `Median condition-level SE ratio` = round(.data$median_se_ratio, 3),
+    `MC interval below .95` = .data$cells_below_nominal,
+    `MC interval above .95` = .data$cells_above_nominal
+  ) %>%
+  kable(
+    align = c("l", rep("r", 9)),
+    caption = paste(
+      "Primary factorial cells only. Cell counts require the condition-level",
+      "95% Monte Carlo interval to lie wholly below or above .95."
+    )
+  )
+```
+
+```{r null-summary-table}
+null_summary %>%
+  transmute(
+    Method = .data$method_label,
+    Cells = .data$cells,
+    `Interval eligible` = percent(.data$eligibility, accuracy = .1),
+    `Mean bias` = round(.data$bias, 3),
+    `Conditional Type I error` = percent(.data$type1_error, accuracy = .1),
+    `Operational Type I error` = percent(
+      .data$operational_type1_error,
+      accuracy = .1
+    ),
+    `Conditional coverage` = percent(.data$coverage, accuracy = .1)
+  ) %>%
+  kable(align = c("l", rep("r", 6)))
+```
+
+{{< include _vh_v2_provenance.qmd >}}
+
+## Session information
+
+```{r session-info}
+sessionInfo()
+```

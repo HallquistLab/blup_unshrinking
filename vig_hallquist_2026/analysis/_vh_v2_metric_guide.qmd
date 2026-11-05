@@ -1,0 +1,136 @@
+# Common terminology and performance metrics
+
+The four v2 reports use the same vocabulary and denominator rules. A
+**simulation condition** (or *cell*) is one combination of design factors, such
+as the number of clusters, observations per cluster, reliability, correlation,
+and true structural effect. Unless a pooled count is explicitly reported,
+summaries give every condition equal weight. This prevents a method with more
+eligible fits in easy conditions from implicitly receiving more weight.
+If an entire condition has no eligible interval, its conditional coverage and
+SE quantities are undefined and are omitted from the cross-condition average;
+eligibility and success-and-cover still retain that condition's failures.
+
+## Measurement and model terminology
+
+- The **data-generating model (DGM)** is the population mechanism used to
+  create a simulated data set. An **estimand** is the population quantity the
+  analysis is intended to recover; here it is the standardized structural
+  coefficient, not merely a regression coefficient among estimated scores.
+- A **cluster** is the Level-2 unit (for example, a person) observed repeatedly
+  at Level 1. A **random intercept** is that unit's deviation in level; a
+  **random slope** is its deviation in the within-unit association with the
+  Level-1 predictor. The structural regression asks whether these latent
+  between-unit differences predict, or are predicted by, another variable.
+- A **BLUP** (best linear unbiased predictor), also called an empirical Bayes
+  score, is the mixed model's conditional prediction of a cluster's random
+  effect. BLUPs deliberately shrink noisy cluster estimates toward the
+  population mean. That improves prediction of an individual random effect but
+  generally makes a subsequent regression on the BLUP target a shrunken
+  quantity rather than the intended latent-effect relation.
+- An **unshrunk score** reverses the fitted BLUP shrinkage map to recover a
+  score on the latent random-effect scale. Unshrinking repairs the shrinkage
+  target, but the recovered score remains noisy. If it is used as a predictor,
+  Stage 2 must still account for its measurement-error covariance.
+- **Fuller (stabilized)** is the proposed two-stage moment correction. It uses
+  unshrunk scores and their estimated Stage-1 error-covariance matrices, then
+  stabilizes the sampling-variance calculation. The book-equation and
+  alpha-stepdown versions are algebra and tail-sensitivity checks. References
+  to the variance **bread** mean the inverse sensitivity/information component
+  of a sandwich variance estimator, not a second point-estimation correction.
+- **Lai 2S-PA** is Lai's two-stage path-analysis approach: Stage-1 scores and
+  their uncertainty enter a latent-variable path model. **2S-PAA** replaces
+  row-specific uncertainty by an average matrix. **MSEM** is a one-stage
+  multilevel structural equation model. An **oracle** uses the simulated true
+  random effects and supplies a finite-sample benchmark that an applied method
+  cannot attain in real data.
+- A **negative control** is a deliberately inadequate estimator whose expected
+  failure has diagnostic value. For example, naive BLUP regression should show
+  shrinkage attenuation. If it did not, the simulation or reporting pipeline
+  would itself require scrutiny.
+
+**Marginal posterior slope reliability** is the primary information target:
+
+$$
+R = 1 - \frac{E\{V_{i,\mathrm{post}}[\mathrm{slope},\mathrm{slope}]\}}
+                 {G[\mathrm{slope},\mathrm{slope}]}.
+$$
+
+Here, $G$ is the population random intercept--slope covariance matrix and
+$V_{i,\mathrm{post}}$ is the remaining posterior uncertainty for cluster $i$
+under its observation schedule. Thus, $R=.80$ means that the repeated
+measurements remove about 80% of the slope's prior or marginal uncertainty,
+not that 80% of single observations are signal. **Residualized-slope
+reliability**, $R_\eta$, applies the same idea to the component of the slope
+left after its linear association with the random intercept is removed. It can
+differ from marginal reliability when intercepts and slopes correlate.
+
+An **ICC** is a variance share for an observation under a specified predictor
+value or contrast. It is not interchangeable with posterior reliability:
+posterior reliability also uses the number and placement of repeated
+observations. The v2 **shape-preserving calibration** varies Level-1 residual
+noise to attain the requested $R$ while holding the slope/intercept variance
+ratio and intercept--slope correlation fixed. Reliability contrasts therefore
+do not silently become contrasts in latent covariance geometry.
+
+The **condition number** summarizes how unequal the principal variances of a
+covariance matrix are: one is perfectly balanced, while a very large value
+signals near-singularity and numerical sensitivity. A covariance estimate is
+**positive definite** when it represents strictly positive variation in every
+linear combination of its latent variables. Zero/negative variances or a
+nonpositive eigenvalue place a fitted covariance on or beyond an inadmissible
+boundary.
+
+## What each performance quantity answers
+
+| Quantity | Definition and interpretation |
+|---|---|
+| Bias | The mean eligible estimate minus the true coefficient. Bias diagnoses centering; positive and negative values indicate over- and underestimation. Absolute bias ignores direction. |
+| Relative bias | Bias divided by the nonzero true coefficient. It puts attenuation on a comparable percentage scale; it is undefined at the null. |
+| RMSE | Root mean squared error, combining squared bias and sampling variability of point estimates. It is especially useful for individual-score recovery, where a shrunken predictor can have low RMSE despite targeting the wrong Stage-2 coefficient. |
+| Empirical sampling SD | The standard deviation of the estimates across repeated simulated samples. It is the Monte Carlo approximation to how much the estimator actually varies from sample to sample. |
+| Model SE | The standard error reported by the method within one simulated sample. It is the method's own estimate of repeated-sample uncertainty. |
+| Conditional coverage | Among replications that return an eligible interval, the proportion of nominal 95% intervals containing the truth. It answers a conditional calibration question and excludes failed or inadmissible intervals from its denominator. |
+| Interval eligibility | The proportion of all attempted replications that return an admissible point estimate, a finite positive SE, and ordered confidence limits under the prespecified method-specific checks. |
+| Success-and-cover | The joint proportion of all attempted replications that both return an eligible interval and cover the truth. Within a cell it equals interval eligibility multiplied by conditional coverage. It is an operational success probability, not a replacement for conventional conditional coverage. |
+| Type I error | In null cells, the proportion of eligible intervals that exclude zero. With the two-sided interval-inversion rule it equals one minus conditional coverage. Operational Type I error instead divides successful rejections by all attempted replications and can look small simply because a method often fails. |
+| Power | In non-null cells, the proportion of eligible intervals that exclude zero. Operational power uses all attempted replications as the denominator. |
+| Monte Carlo SE | Simulation uncertainty in an estimated bias or rate. It describes precision of the simulation summary, not uncertainty in a fitted empirical-data coefficient. |
+
+A **Monte Carlo confidence interval** applies the Monte Carlo SE (or a binomial
+interval for a rate) to a simulation summary. It asks how precisely the
+simulation has estimated performance. A 95% **Wald confidence interval** in an
+individual replication is instead the fitted coefficient plus or minus a
+normal critical value times its model SE; those are the intervals whose
+coverage is being evaluated.
+
+The standard-error calibration plots require one additional distinction. For
+each condition $c$, the report computes
+
+$$
+Q_c =
+\frac{\text{mean reported SE among interval-eligible replications}}
+     {\text{empirical SD of estimates in that same eligible subset}}.
+$$
+
+The figures then show the **median of $Q_c$ across the nuisance conditions**
+represented by a point. They do not show a median SE divided by an SD. A ratio
+near one means that the method's typical reported uncertainty agrees with its
+observed repeated-sample variability; values above one indicate typically
+conservative SE scale, and values below one indicate typically anti-conservative
+SE scale. The median is used so a few extreme condition-level ratios do not
+determine the display.
+
+Near-one SE scale is necessary but not sufficient for calibrated intervals.
+Coverage can still be poor because estimates are biased, standardized errors
+are skewed or heavy-tailed, SEs covary with estimation error, or only a selected
+subset of fits is eligible. Accordingly, the reports also inspect the
+replication-level **standardized error**
+$(\widehat\beta-\beta)/\widehat{\mathrm{SE}}$. Its SD should be near one when
+studentization is working; tail summaries reveal failures that a median $Q_c$
+can hide.
+
+Fitted posterior reliability and the empirical squared correlation between a
+true simulated slope and its BLUP answer related but different questions. The
+first is model-based and computed from fitted covariance/posterior-variance
+quantities; the second directly measures score recovery in the simulation.
+They need not be numerically identical in finite samples.

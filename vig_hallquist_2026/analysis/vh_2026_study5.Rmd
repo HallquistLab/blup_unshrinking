@@ -1,0 +1,1936 @@
+---
+title: "VH Study 5: Matched Posterior-Reliability Calibration Bridge"
+author: "Simulation analysis"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: hide
+params:
+  output_dir: "outputs/vig_hallquist_study5"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center",
+  dpi = 120
+)
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(readr)
+  library(ggplot2)
+  library(knitr)
+  library(scales)
+})
+
+input_path <- tryCatch(knitr::current_input(dir = TRUE), error = function(e) "")
+analysis_dir <- if (nzchar(input_path)) dirname(normalizePath(input_path)) else getwd()
+repo_root <- normalizePath(file.path(analysis_dir, "..", ".."), mustWork = TRUE)
+resolve_repo_path <- function(path) {
+  if (grepl("^/", path)) path else file.path(repo_root, path)
+}
+
+source(file.path(
+  repo_root,
+  "vig_hallquist_2026",
+  "random_effects_structural_simulation.R"
+), local = knitr::knit_global())
+
+design <- select_design("5")
+output_dir <- resolve_repo_path(params$output_dir)
+replication_candidates <- file.path(
+  output_dir,
+  c(
+    "vig_hallquist_5_full_selection_replication_results.csv.gz",
+    "vig_hallquist_study5_full_selection_replication_results.csv.gz"
+  )
+)
+replication_path <- if (any(file.exists(replication_candidates))) {
+  replication_candidates[which(file.exists(replication_candidates))[[1L]]]
+} else {
+  replication_candidates[[1L]]
+}
+summary_path <- file.path(
+  output_dir,
+  "vig_hallquist_5_full_selection_summary.csv"
+)
+results_available <- file.exists(replication_path)
+
+arm_labels <- c(
+  current_g22 = "Legacy solve-G_22 (= τ₁²)",
+  shape_preserving_marginal = "Fixed G shape: marginal R",
+  shape_preserving_partial = "Fixed G shape: partial R"
+)
+method_labels <- c(
+  oracle_dual = "Oracle dual",
+  naive_dual_blup = "Naive dual BLUP",
+  closed_form_dual = "Uncorrected closed-form OLS",
+  fuller_closed_form = "Fuller (stabilized)",
+  fuller_book_preliminary_closed_form = "Fuller (book preliminary)",
+  fuller_book_closed_form = "Fuller (book equations)",
+  fuller_alpha_stepdown_closed_form = "Fuller alpha-stepdown",
+  lai_2spa = "Lai 2S-PA",
+  msem = "MSEM"
+)
+confirmatory_methods <- c(
+  "oracle_dual", "naive_dual_blup", "fuller_closed_form", "lai_2spa", "msem"
+)
+corrected_methods <- c("fuller_closed_form", "lai_2spa", "msem")
+bias_plot_methods <- c("oracle_dual", corrected_methods)
+method_palette <- c(
+  "Oracle dual" = "#4D4D4D",
+  "Naive dual BLUP" = "#E15759",
+  "Fuller (stabilized)" = "#4E79A7",
+  "Lai 2S-PA" = "#B07AA1",
+  "MSEM" = "#59A14F"
+)
+arm_palette <- c(
+  "Legacy solve-G_22 (= τ₁²)" = "#E15759",
+  "Fixed G shape: marginal R" = "#4E79A7",
+  "Fixed G shape: partial R" = "#B6992D"
+)
+
+if (results_available) {
+  replications <- data.table::fread(replication_path) %>%
+    tibble::as_tibble() %>%
+    mutate(
+      analysis_eligible = if ("analysis_eligible" %in% names(.)) {
+        as.logical(analysis_eligible)
+      } else {
+        !is.na(estimate)
+      },
+      covered = ci_low <= truth & ci_high >= truth,
+      reject_positive = analysis_eligible & ci_low > 0,
+      reject_negative = analysis_eligible & ci_high < 0,
+      reject_two_sided = reject_positive | reject_negative,
+      calibration_arm_label = factor(
+        unname(arm_labels[calibration_arm]),
+        levels = unname(arm_labels)
+      ),
+      method_label = factor(
+        unname(method_labels[method]),
+        levels = unname(method_labels)
+      )
+    )
+
+  performance <- replications %>%
+    group_by(
+      condition_id, calibration_arm, calibration_arm_label,
+      mean_clus_size, marginal_rho, standardized_beta_target,
+      method, method_label
+    ) %>%
+    summarise(
+      n_rep = n(),
+      n_eligible = sum(analysis_eligible, na.rm = TRUE),
+      convergence = mean(analysis_eligible, na.rm = TRUE),
+      mean_estimate = mean(estimate[analysis_eligible], na.rm = TRUE),
+      bias = mean((estimate - truth)[analysis_eligible], na.rm = TRUE),
+      empirical_sd = sd(estimate[analysis_eligible], na.rm = TRUE),
+      mean_se = mean(se[analysis_eligible], na.rm = TRUE),
+      median_se = median(se[analysis_eligible], na.rm = TRUE),
+      mean_se_ratio = mean_se / empirical_sd,
+      typical_se_ratio = median_se / empirical_sd,
+      bias_mc_se = empirical_sd / sqrt(n_eligible),
+      bias_mc_low = bias - qnorm(.975) * bias_mc_se,
+      bias_mc_high = bias + qnorm(.975) * bias_mc_se,
+      coverage = mean(covered[analysis_eligible], na.rm = TRUE),
+      success_and_cover = sum(analysis_eligible & covered, na.rm = TRUE) / n_rep,
+      mc_low = qbinom(.025, n_eligible, .95) / n_eligible,
+      mc_high = qbinom(.975, n_eligible, .95) / n_eligible,
+      truth = first(truth),
+      .groups = "drop"
+    )
+
+  arm_summary <- performance %>%
+    filter(method %in% confirmatory_methods) %>%
+    group_by(calibration_arm_label, method_label) %>%
+    summarise(
+      cells = n(),
+      mean_eligibility = mean(convergence, na.rm = TRUE),
+      mean_coverage = mean(coverage, na.rm = TRUE),
+      minimum_coverage = min(coverage, na.rm = TRUE),
+      cells_below_mc_band = sum(coverage < mc_low, na.rm = TRUE),
+      cells_in_mc_band = sum(coverage >= mc_low & coverage <= mc_high, na.rm = TRUE),
+      cells_above_mc_band = sum(coverage > mc_high, na.rm = TRUE),
+      mean_success_and_cover = mean(success_and_cover, na.rm = TRUE),
+      mean_absolute_bias = mean(abs(bias), na.rm = TRUE),
+      median_cell_mean_se_ratio = median(mean_se_ratio, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  arm_stat <- function(arm, method, variable) {
+    arm_summary %>%
+      filter(calibration_arm_label == arm, method_label == method) %>%
+      pull(all_of(variable)) %>%
+      first()
+  }
+
+  bias_arm_summary <- performance %>%
+    filter(method %in% bias_plot_methods) %>%
+    group_by(calibration_arm_label, method_label) %>%
+    summarise(
+      cells = n(),
+      cells_bias_ci_excludes_zero = sum(
+        bias_mc_low > 0 | bias_mc_high < 0
+      ),
+      mean_bias = mean(bias),
+      bias_mc_se = sqrt(sum(bias_mc_se^2)) / cells,
+      bias_mc_low = mean_bias - qnorm(.975) * bias_mc_se,
+      bias_mc_high = mean_bias + qnorm(.975) * bias_mc_se,
+      mean_absolute_bias = mean(abs(bias)),
+      .groups = "drop"
+    )
+
+  null_performance <- replications %>%
+    filter(standardized_beta_target == 0) %>%
+    group_by(
+      condition_id, calibration_arm, calibration_arm_label,
+      mean_clus_size, marginal_rho, method, method_label
+    ) %>%
+    summarise(
+      n_rep = n(),
+      n_eligible = sum(analysis_eligible, na.rm = TRUE),
+      eligibility = n_eligible / n_rep,
+      n_type1 = sum(reject_two_sided, na.rm = TRUE),
+      n_positive = sum(reject_positive, na.rm = TRUE),
+      n_negative = sum(reject_negative, na.rm = TRUE),
+      type1_error = n_type1 / n_eligible,
+      positive_rejection = n_positive / n_eligible,
+      negative_rejection = n_negative / n_eligible,
+      operational_type1 = n_type1 / n_rep,
+      coverage = mean(covered[analysis_eligible], na.rm = TRUE),
+      bias = mean((estimate - truth)[analysis_eligible], na.rm = TRUE),
+      empirical_sd = sd((estimate - truth)[analysis_eligible], na.rm = TRUE),
+      bias_mc_se = empirical_sd / sqrt(n_eligible),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      wilson_denominator = 1 + qnorm(.975)^2 / n_eligible,
+      wilson_center = (
+        type1_error + qnorm(.975)^2 / (2 * n_eligible)
+      ) / wilson_denominator,
+      wilson_half_width = qnorm(.975) * sqrt(
+        type1_error * (1 - type1_error) / n_eligible +
+          qnorm(.975)^2 / (4 * n_eligible^2)
+      ) / wilson_denominator,
+      type1_ci_low = pmax(0, wilson_center - wilson_half_width),
+      type1_ci_high = pmin(1, wilson_center + wilson_half_width),
+      nominal_mc_low = qbinom(.025, n_eligible, .05) / n_eligible,
+      nominal_mc_high = qbinom(.975, n_eligible, .05) / n_eligible,
+      coverage_type1_identity_error = abs(type1_error - (1 - coverage))
+    )
+
+  null_arm_summary <- null_performance %>%
+    filter(method %in% confirmatory_methods) %>%
+    group_by(calibration_arm_label, method_label) %>%
+    summarise(
+      cells = n(),
+      cells_below_nominal_range = sum(type1_error < nominal_mc_low),
+      cells_in_nominal_range = sum(
+        type1_error >= nominal_mc_low & type1_error <= nominal_mc_high
+      ),
+      cells_above_nominal_range = sum(type1_error > nominal_mc_high),
+      mean_eligibility = mean(eligibility),
+      mean_bias = mean(bias),
+      bias_mc_se = sqrt(sum(bias_mc_se^2)) / cells,
+      mean_type1_error = mean(type1_error),
+      mean_positive_rejection = mean(positive_rejection),
+      mean_negative_rejection = mean(negative_rejection),
+      mean_operational_type1 = mean(operational_type1),
+      minimum_type1_error = min(type1_error),
+      maximum_type1_error = max(type1_error),
+      .groups = "drop"
+    )
+
+  null_direction_summary <- null_arm_summary %>%
+    dplyr::select(
+      calibration_arm_label, method_label,
+      mean_positive_rejection, mean_negative_rejection
+    ) %>%
+    pivot_longer(
+      cols = starts_with("mean_"),
+      names_to = "direction",
+      values_to = "rejection_rate"
+    ) %>%
+    mutate(
+      direction = recode(
+        direction,
+        mean_positive_rejection = "CI entirely above zero",
+        mean_negative_rejection = "CI entirely below zero"
+      ),
+      signed_rejection_rate = if_else(
+        direction == "CI entirely below zero",
+        -rejection_rate,
+        rejection_rate
+      )
+    )
+
+  null_stat <- function(arm, method, variable) {
+    null_arm_summary %>%
+      filter(calibration_arm_label == arm, method_label == method) %>%
+      pull(all_of(variable)) %>%
+      first()
+  }
+
+  worst_naive_cell <- performance %>%
+    filter(method == "naive_dual_blup") %>%
+    slice_max(abs(bias), n = 1, with_ties = FALSE)
+  largest_msem_se <- replications %>%
+    filter(method == "msem", analysis_eligible, is.finite(se)) %>%
+    slice_max(se, n = 1, with_ties = FALSE)
+  largest_msem_se_cell <- performance %>%
+    filter(
+      method == "msem",
+      condition_id == largest_msem_se$condition_id[[1]]
+    )
+  largest_msem_se_profile <- replications %>%
+    filter(
+      method == "msem", analysis_eligible,
+      condition_id == largest_msem_se$condition_id[[1]]
+    ) %>%
+    summarise(
+      eligible_n = n(),
+      median_se = median(se, na.rm = TRUE),
+      p99_se = quantile(se, .99, na.rm = TRUE),
+      maximum_se = max(se, na.rm = TRUE)
+    )
+} else {
+  replications <- tibble()
+  performance <- tibble()
+  arm_summary <- tibble()
+  bias_arm_summary <- tibble()
+  null_performance <- tibble()
+  null_arm_summary <- tibble()
+  null_direction_summary <- tibble()
+}
+
+theme_study5 <- function() {
+  theme_bw(base_size = 10) +
+    theme(
+      panel.grid.minor = element_blank(),
+      legend.position = "bottom",
+      strip.background = element_rect(fill = "grey95", colour = "grey75")
+    )
+}
+```
+
+# Technical summary
+
+Study 5 resolves the main design question more clearly than it resolves the
+choice of estimator. Preserving a regular random-effects covariance shape
+removes much of the severe undercoverage seen for the corrected methods, while
+the oracle remains close to 95% in all three arms. It does not make every
+method well calibrated: the naive BLUP analysis, for example, has inflated
+null rejection rates in both fixed-shape arms. The severe Study 2 pattern is
+therefore not evidence that posterior reliability is intrinsically unsuitable.
+It is primarily evidence against attaining low reliability by collapsing only
+the random-slope variance, $\tau_1^2$, especially when the random intercept and
+slope are correlated. The old code calls this the `solve-G_22` arm because the
+slope variance occupies `G[2,2]` in R. In the mathematical notation used in this
+report, however,
+
+$$
+G =
+\begin{pmatrix}
+\tau_0^2 & \tau_{01} \\
+\tau_{01} & \tau_1^2
+\end{pmatrix},
+$$
+
+so $\tau_0^2$ is the random-intercept variance, $\tau_1^2$ is the random-slope
+variance, and $\tau_{01}$ is their covariance. The label `solve-G_22` is
+retained only when referring to that legacy code terminology; it means solving
+for $\tau_1^2$, not adopting a mixed mathematical subscript convention.
+
+The repaired DGM does **not** make all methods inferentially equivalent. Under
+fixed-shape marginal and partial reliability, respectively, mean conditional
+coverage is `r percent(arm_stat("Fixed G shape: marginal R", "Fuller (stabilized)", "mean_coverage"), accuracy = .1)`
+and `r percent(arm_stat("Fixed G shape: partial R", "Fuller (stabilized)", "mean_coverage"), accuracy = .1)`
+for Fuller, `r percent(arm_stat("Fixed G shape: marginal R", "Lai 2S-PA", "mean_coverage"), accuracy = .1)`
+and `r percent(arm_stat("Fixed G shape: partial R", "Lai 2S-PA", "mean_coverage"), accuracy = .1)`
+for 2S-PA, and `r percent(arm_stat("Fixed G shape: marginal R", "MSEM", "mean_coverage"), accuracy = .1)`
+and `r percent(arm_stat("Fixed G shape: partial R", "MSEM", "mean_coverage"), accuracy = .1)`
+for MSEM. Thus Fuller and 2S-PA generally overcover after the geometry repair,
+whereas MSEM is much closer to nominal and retains some non-null undercoverage
+under marginal-reliability calibration.
+
+At $\beta=0$, CI coverage and Type I error are complements for the
+CI-inversion test used here: conditional Type I error is exactly
+$1-\text{coverage}$. The oracle is nominal in every arm. Fuller and 2S-PA are
+extremely conservative (roughly .2%--.6% arm-average Type I error), whereas
+naive BLUP is inflated in both fixed-shape arms (about 8%--9%). Legacy-arm
+MSEM averages 5.2%, but this hides a sharp split: its two $\rho=.5$ cells have
+8.1% and 8.7% Type I error, while its $\rho=0$ cells are conservative. Thus
+poor null coverage is direct Type I error inflation, but mean bias is not by
+itself the mechanism; scale estimation, tail behavior, and fit selection also
+determine rejection.
+
+The 2S-PA result needs a strong qualification: its coverage is conditional on
+an analyzable fit. Its mean eligibility is only
+`r percent(arm_stat("Fixed G shape: marginal R", "Lai 2S-PA", "mean_eligibility"), accuracy = .1)`
+under fixed-shape marginal calibration and
+`r percent(arm_stat("Fixed G shape: partial R", "Lai 2S-PA", "mean_eligibility"), accuracy = .1)`
+under fixed-shape partial calibration. The corresponding probabilities of
+both obtaining an eligible result and covering are only
+`r percent(arm_stat("Fixed G shape: marginal R", "Lai 2S-PA", "mean_success_and_cover"), accuracy = .1)`
+and `r percent(arm_stat("Fixed G shape: partial R", "Lai 2S-PA", "mean_success_and_cover"), accuracy = .1)`.
+High conditional coverage is therefore not evidence that 2S-PA is the best
+operational procedure.
+
+The bias results sharpen the method comparison. The oracle is centered in all
+three arms. In the legacy arm, the equal-cell-weighted mean biases are about
+-.058 for Fuller and -.065 for 2S-PA. Shape preservation removes that negative
+centering problem, but the fixed-shape marginal/partial mean biases become
+.028/.024 for Fuller, .114/.081 for 2S-PA, and .072/.050 for MSEM. Thus MSEM is
+less biased than 2S-PA after repair, while Fuller remains the least biased
+proxy method. Narrow Monte Carlo intervals show that most of these mean biases
+are estimated precisely; precision does not make them substantively small.
+
+The decision from this bridge is to retain posterior-reliability calibration,
+replace the one-coordinate $\tau_1^2$ manipulation with a shape-preserving one,
+and report residualized-slope reliability ($R_\eta$) alongside marginal slope
+reliability. The partial-reliability arm improves MSEM specifically when
+$\rho=.5$, but it is not a clean comparison at the same marginal information:
+targeting $R_\eta=.25$ raises marginal slope reliability to about .364, whereas
+the fixed-shape marginal arm holds it at .25. It also does not cure the
+Fuller/2S-PA overcoverage. For a coherent revision of Studies 1--4, the most
+defensible primary design is therefore to target marginal slope reliability in
+every measurement process, hold covariance shape fixed, and use $R_\eta$ as a
+required diagnostic and focused sensitivity factor in correlated conditions.
+The oracle is the interval-calibration benchmark. Among the feasible
+estimators, MSEM gives the best overall balance in this grid; Fuller is a
+stable, low-bias point-estimation comparator whose intervals are conservative;
+and 2S-PA should be reported with both conditional coverage and eligibility.
+
+# Question and decision
+
+Study 5 asks whether the low coverage in VH Study 2 is caused by posterior
+reliability itself, by the legacy practice of attaining low reliability by
+collapsing only the slope variance, or by using marginal slope reliability for
+a dual-predictor estimand. It changes only the calibration route and reuses the
+Study 2 data generator and estimator code.
+
+The prespecified interpretation is:
+
+- fixed-shape marginal coverage improves over legacy calibration: retain
+  posterior reliability and replace the one-coordinate calibration;
+- only fixed-shape partial-reliability coverage improves: use reliability of
+  the residualized slope as the primary information factor;
+- both fixed-shape arms improve similarly: covariance regularity is decisive,
+  and either reliability definition is usable with geometry guards;
+- proxy methods fail for non-null effects but oracle coverage is nominal:
+  estimator or interval limitations remain after DGM repair; and
+- oracle coverage fails: audit truth and interval construction before deciding
+  between information factors.
+
+The observed pattern supports the first interpretation most strongly. The
+partial arm adds useful evidence for correlated dual-predictor models, but its
+change in marginal reliability prevents treating it as a decisive test that
+$R_\eta$ should replace marginal reliability as the shared primary factor.
+
+`r if (results_available) paste0("The production replication file was found at ", replication_path, " and the results below are live.") else paste0("No production replication file was found at ", replication_path, ". This report therefore validates and displays the design, and will populate its results sections after the simulation is run.")`
+
+# Design and manipulation checks
+
+The 36 conditions fix 100 clusters and target reliability .25. They cross
+three calibration arms, cluster sizes 10 and 25, correlations 0 and .5, and
+standardized focal effects 0, .2, and .4. Each condition is intended to receive
+1,000 replications.
+
+```{r design-table}
+design %>%
+  distinct(
+    calibration_arm, calibration_metric, mean_clus_size, marginal_rho,
+    sigma, achieved_reliability, achieved_partial_reliability,
+    slope_intercept_variance_ratio, G_condition_number,
+    conditional_slope_icc
+  ) %>%
+  mutate(
+    calibration_arm = unname(arm_labels[calibration_arm]),
+    across(where(is.numeric), ~ round(.x, 4))
+  ) %>%
+  arrange(calibration_arm, mean_clus_size, marginal_rho) %>%
+  kable(
+    col.names = c(
+      "Calibration arm", "Target metric", "m", "rho", "sigma",
+      "Marginal R", "Partial R", "τ₁²/τ₀²", "kappa(G)",
+      "Conditional slope ICC"
+    ),
+    caption = "Population manipulation checks for the 12 unique first-stage designs."
+  )
+```
+
+The arm comparison is intentionally sharp. At $\rho=.5$, the legacy
+calibration attains marginal reliability .25 while residualized-slope
+reliability falls below .04; at $m=25$ it is about .015. The fixed-shape arms
+retain $\tau_1^2/\tau_0^2=1$ and a well-conditioned $G$, then vary the level-1
+residual scale. At $\rho=0$, marginal and residualized reliability coincide,
+so the two fixed-shape arms are exact duplicate controls.
+
+# Monte Carlo results
+
+## Regular covariance geometry restores coverage, but methods diverge
+
+```{r coverage-plot, eval=results_available, fig.width=11, fig.height=7}
+performance %>%
+  filter(method %in% confirmatory_methods) %>%
+  ggplot(aes(
+    x = calibration_arm_label,
+    y = coverage,
+    colour = method_label,
+    shape = method_label,
+    group = method_label
+  )) +
+  geom_hline(yintercept = .95, linetype = 2, colour = "grey35") +
+  geom_point(position = position_dodge(width = .35), size = 1.8) +
+  geom_line(position = position_dodge(width = .35), linewidth = .45) +
+  facet_grid(
+    mean_clus_size + marginal_rho ~ standardized_beta_target,
+    labeller = labeller(
+      mean_clus_size = function(x) paste0("m = ", x),
+      marginal_rho = function(x) paste0("rho = ", x),
+      standardized_beta_target = function(x) paste0("beta = ", x)
+    )
+  ) +
+  scale_y_continuous(labels = percent_format(accuracy = 1), limits = c(0, 1)) +
+  scale_colour_manual(values = method_palette, drop = TRUE) +
+  scale_shape_manual(values = c(16, 17, 15, 18, 8), drop = TRUE) +
+  labs(
+    x = NULL,
+    y = "95% CI coverage",
+    colour = NULL,
+    shape = NULL,
+    title = "Coverage across matched calibration arms",
+    subtitle = "Coverage is conditional on an eligible estimate; dashed line is the 95% target"
+  ) +
+  theme_study5() +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1))
+```
+
+```{r arm-summary, eval=results_available}
+arm_summary %>%
+  mutate(
+    across(
+      c(mean_eligibility, mean_coverage, minimum_coverage, mean_success_and_cover),
+      percent, accuracy = .1
+    ),
+    mean_absolute_bias = formatC(mean_absolute_bias, digits = 3, format = "g"),
+    median_cell_mean_se_ratio = round(median_cell_mean_se_ratio, 3)
+  ) %>%
+  kable(
+    col.names = c(
+      "Calibration arm", "Method", "Cells", "Eligibility", "Mean coverage",
+      "Minimum coverage", "Below MC band", "In MC band", "Above MC band",
+      "Success and cover", "Mean |bias|", "Median cell mean-SE / SD"
+    ),
+    caption = paste(
+      "Arm-level summary. Coverage is conditional on eligibility; success and",
+      "cover counts ineligible replications as unsuccessful. Monte Carlo bands",
+      "use each cell's eligible denominator."
+    )
+  )
+```
+
+The oracle provides the critical calibration check: mean coverage ranges from
+`r percent(min(arm_summary$mean_coverage[arm_summary$method_label == "Oracle dual"]), accuracy = .1)`
+to `r percent(max(arm_summary$mean_coverage[arm_summary$method_label == "Oracle dual"]), accuracy = .1)`,
+with complete eligibility. This makes a truth-coding or generic
+confidence-interval bug an implausible explanation for the proxy-method patterns.
+
+The fixed-shape arms move all three proxy methods away from the severe
+legacy-arm undercoverage. However, “improvement” should not be read as
+“calibration.”
+Fuller is above its cell-specific Monte Carlo band in 11 of 12
+marginal-reliability cells and 10 of 12 partial-reliability cells. 2S-PA is above the
+band in 11 of 12 cells in each fixed-shape arm. MSEM is more balanced: under
+marginal calibration it is below the band in 5 cells, within it in 5, and above
+it in 2; under partial calibration the corresponding counts are 2, 4, and 6.
+
+## Overcoverage depends on method, effect size, and selection
+
+```{r fixed-shape-effect-summary, eval=results_available}
+performance %>%
+  filter(
+    calibration_arm != "current_g22",
+    method %in% corrected_methods
+  ) %>%
+  group_by(calibration_arm_label, method_label, standardized_beta_target) %>%
+  summarise(
+    eligibility = mean(convergence),
+    mean_coverage = mean(coverage),
+    mean_bias = mean(bias),
+    below = sum(coverage < mc_low),
+    within = sum(coverage >= mc_low & coverage <= mc_high),
+    above = sum(coverage > mc_high),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    eligibility = percent(eligibility, accuracy = .1),
+    mean_coverage = percent(mean_coverage, accuracy = .1),
+    mean_bias = round(mean_bias, 3)
+  ) %>%
+  kable(
+    col.names = c(
+      "Calibration arm", "Method", "Beta", "Eligibility", "Coverage",
+      "Mean bias", "Below", "Within", "Above"
+    ),
+    caption = "Fixed-shape results by effect size; band counts are across the four m-by-rho cells."
+  )
+```
+
+For Fuller, overcoverage is most pronounced at the null and diminishes as the
+effect grows: coverage under fixed-shape marginal calibration moves from
+99.8% at $\beta=0$ to 97.4% at $\beta=.4$, and under partial calibration from
+99.4% to 97.2%. Fuller has complete eligibility and relatively small bias, so
+this is genuine interval conservatism rather than a fit-selection artifact.
+
+2S-PA shows the same conditional-coverage gradient, but it also has appreciable
+positive non-null bias and many ineligible replications. Its fixed-shape
+conditional coverage near 99% is therefore a property of the selected,
+analyzable fits and their intervals, not an unconditional guarantee. By
+contrast, MSEM coverage decreases with effect size: under marginal calibration
+it moves from 96.1% at the null to 92.9% at $\beta=.4$; partial calibration
+raises the $\beta=.4$ result to 94.5% but modestly overcovers the null and
+$\beta=.2$ conditions. This is why averaging coverage alone would make the
+partial MSEM result look more uniformly successful than it is.
+
+The marginal-versus-partial MSEM difference is concentrated exactly where the
+two reliability definitions diverge. Averaged across $m$ and $\beta$ at
+$\rho=.5$, MSEM coverage is 93.4% under fixed-shape marginal calibration and
+96.4% under fixed-shape partial calibration. At $\rho=0$, where the population
+DGMs are duplicates, the corresponding values are 95.6% and 95.8%. Fuller and
+2S-PA are already near 99% in both correlated fixed-shape arms. This supports
+$R_\eta$ as a consequential information factor for MSEM, while also showing
+that it cannot explain the conservative Fuller/2S-PA intervals.
+
+## Null undercoverage is Type I error inflation, not merely a warning sign
+
+The null conditions have a more specific interpretation than the non-null
+conditions. For the two-sided CI-inversion rule
+
+$$
+\text{reject }H_0:\beta=0 \quad\Longleftrightarrow\quad
+0 \notin [L,U],
+$$
+
+the conditional Type I error estimate in a null cell is
+
+$$
+\widehat{\alpha}_{\mathrm{conditional}}
+= \frac{\sum I(\text{eligible})I(0\notin[L,U])}
+        {\sum I(\text{eligible})}
+= 1-\widehat{\operatorname{coverage}}.
+$$
+
+This is an identity, not an approximation. It applies because the same 95%
+interval and eligible-fit denominator define both quantities. It would not
+necessarily apply to a separately implemented Wald or likelihood-ratio test
+whose rejection rule differs from CI inversion.
+
+Accordingly, a separate null-coverage-versus-Type-I scatter would be
+algebraically redundant: every point would lie on
+$\widehat{\alpha}=1-\widehat{C}$. The report plots the null results on the Type
+I error scale because that is the decision-relevant interpretation. This
+equivalence is specific to $\beta=0$. In the non-null cells, $1-$coverage is
+interval miscoverage, not Type I error; power would instead be the probability
+that the interval excludes zero.
+
+```{r null-type1-plot, eval=results_available, fig.width=11, fig.height=6.8}
+type1_position <- position_dodge(width = .62)
+
+null_performance %>%
+  filter(method %in% confirmatory_methods) %>%
+  ggplot(aes(
+    x = type1_error,
+    y = method_label,
+    colour = calibration_arm_label,
+    shape = calibration_arm_label,
+    group = calibration_arm_label
+  )) +
+  geom_vline(xintercept = .05, linetype = 2, colour = "grey30") +
+  geom_errorbarh(
+    aes(xmin = type1_ci_low, xmax = type1_ci_high),
+    height = 0,
+    linewidth = .65,
+    position = type1_position
+  ) +
+  geom_point(size = 2, position = type1_position) +
+  facet_grid(
+    mean_clus_size ~ marginal_rho,
+    labeller = labeller(
+      mean_clus_size = function(x) paste0("m = ", x),
+      marginal_rho = function(x) paste0("rho = ", x)
+    )
+  ) +
+  scale_colour_manual(values = arm_palette) +
+  scale_shape_manual(values = c(16, 17, 15)) +
+  scale_x_continuous(
+    labels = percent_format(accuracy = 1),
+    breaks = seq(0, .14, .02)
+  ) +
+  coord_cartesian(xlim = c(0, .14)) +
+  labs(
+    x = "Conditional Type I error rate",
+    y = NULL,
+    colour = "Calibration arm",
+    shape = "Calibration arm",
+    title = "Null-condition Type I error by design cell",
+    subtitle = "Whiskers are 95% Wilson intervals using eligible fits; dashed line is the nominal 5% rate"
+  ) +
+  theme_study5()
+```
+
+The cell-level view prevents arm averages from hiding opposite failures.
+Oracle Type I error is within the cell-specific nominal Monte Carlo range in
+all 12 cells. Legacy-arm MSEM averages 5.2%, but its $\rho=.5$ rates are 8.1%
+at $m=10$ and 8.7% at $m=25$; its $\rho=0$ rates are only 2.4% and 1.6%.
+Consequently, a nominal-looking arm mean is not sufficient evidence of test
+calibration. Fixed-shape MSEM is conservative on average, at 3.9% under
+marginal reliability and 3.1% under partial reliability.
+
+Naive dual BLUP shows the reverse arm pattern: its legacy-arm null Type I
+error is approximately nominal, but all four null cells are inflated under
+each fixed-shape calibration. The arm-average conditional rates are 8.7% and
+8.4%. Fuller and 2S-PA are conservative in every null cell, with conditional
+rates below about 1.1%. Their null overcoverage therefore corresponds to very
+low Type I error, not successful nominal calibration.
+
+```{r null-type1-summary, eval=results_available}
+null_arm_summary %>%
+  transmute(
+    calibration_arm_label,
+    method_label,
+    eligibility = percent(mean_eligibility, accuracy = .1),
+    mean_null_bias = sprintf("%+.3f", mean_bias),
+    conditional_type1 = percent(mean_type1_error, accuracy = .1),
+    cell_type1_range = paste0(
+      percent(minimum_type1_error, accuracy = .1), "--",
+      percent(maximum_type1_error, accuracy = .1)
+    ),
+    positive_rejection = percent(mean_positive_rejection, accuracy = .1),
+    negative_rejection = percent(mean_negative_rejection, accuracy = .1),
+    operational_type1 = percent(mean_operational_type1, accuracy = .1),
+    cells_below_within_above = paste(
+      cells_below_nominal_range,
+      cells_in_nominal_range,
+      cells_above_nominal_range,
+      sep = " / "
+    )
+  ) %>%
+  kable(
+    col.names = c(
+      "Calibration arm", "Method", "Eligibility", "Mean null bias",
+      "Conditional Type I", "Cell range", "Positive rejection",
+      "Negative rejection", "Success and reject", "Cells below / within / above"
+    ),
+    caption = paste(
+      "Equal-cell-weighted null summaries. 'Success and reject' uses all",
+      "replications as the denominator; nominal-range counts use each cell's",
+      "eligible denominator and a two-sided 95% Monte Carlo range around .05."
+    )
+  )
+```
+
+“Success and reject” is an operational complement to conditional Type I error,
+not a preferred error-rate definition. It counts an ineligible fit as no
+rejection, so it is mechanically smaller for methods such as 2S-PA and naive
+BLUP. Unless the actual analysis workflow treats every failed fit as a final
+non-rejection, a low success-and-reject rate does not demonstrate Type I error
+control; eligibility must be reported separately.
+
+## Rejection direction helps distinguish bias from interval failure
+
+```{r null-direction-plot, eval=results_available, fig.width=10, fig.height=7.2}
+null_direction_summary %>%
+  ggplot(aes(
+    x = signed_rejection_rate,
+    y = method_label,
+    fill = direction
+  )) +
+  geom_vline(xintercept = 0, colour = "grey30") +
+  geom_col(width = .65) +
+  facet_wrap(~ calibration_arm_label, ncol = 1) +
+  scale_fill_manual(values = c(
+    "CI entirely below zero" = "#E17C05",
+    "CI entirely above zero" = "#4E79A7"
+  )) +
+  scale_x_continuous(
+    limits = c(-.06, .06),
+    breaks = seq(-.06, .06, .02),
+    labels = function(x) percent(abs(x), accuracy = 1)
+  ) +
+  labs(
+    x = "Cell-weighted conditional rejection rate",
+    y = NULL,
+    fill = NULL,
+    title = "Direction of false-positive rejections",
+    subtitle = "Left: CI entirely below zero; right: CI entirely above zero; the two sides sum to total Type I error"
+  ) +
+  theme_study5()
+```
+
+Bias is one possible cause of directional Type I error, but neither zero bias
+nor statistically detectable bias is sufficient to characterize test
+calibration. Legacy-arm MSEM at $m=10$, $\rho=.5$ illustrates a bias-related
+failure: mean null bias is +.046 and positive-direction rejection is 5.4%,
+versus 2.8% in the negative direction. Yet legacy-arm MSEM at $m=25$, $\rho=.5$
+has near-zero mean bias (+.007) and still rejects 8.7%, almost symmetrically.
+That second failure implicates interval scale or tail behavior rather than
+centering.
+
+The converse is also visible. Fixed-shape marginal 2S-PA has positive mean
+null bias (+.031), but its intervals are so conservative that Type I error is
+only .2%. Partial-arm MSEM has appreciable negative mean null bias (-.056), yet
+its Type I error is 3.1%, below nominal. Naive BLUP's enormous mean biases are
+driven by rare ratio outliers and do not map cleanly onto rejection direction.
+The null conditions should therefore be evaluated with a joint diagnostic:
+mean bias and its MC interval for centering, directional Type I error for tail
+asymmetry, total Type I error for test calibration, and eligibility for the
+selection mechanism.
+
+## Shape preservation changes the direction and magnitude of bias
+
+For each condition and method, mean bias is the mean of
+$\hat\beta-\beta$ among eligible replications. Its Monte Carlo standard error
+is
+
+$$
+\operatorname{MCSE}(\widehat{\operatorname{Bias}})
+= \frac{SD(\hat\beta-\beta)}{\sqrt{n_{\mathrm{eligible}}}},
+$$
+
+and the plotted interval is the normal-approximation mean bias $\pm 1.96$
+MCSE. These are intervals for uncertainty in the simulation estimate of mean
+bias. They are not the model-based confidence intervals used to calculate
+coverage.
+
+The figure includes the oracle and the three corrected/latent methods. Naive
+dual BLUP is omitted because its catastrophic ratio estimates produce
+condition-level mean biases as large as $10^5$, which would collapse every
+other interval onto the zero line. It remains in the coverage table and the
+outlier audit below.
+
+```{r bias-ci-plot, eval=results_available, fig.width=11, fig.height=8.5}
+bias_position <- position_dodge(width = .65)
+
+performance %>%
+  filter(method %in% bias_plot_methods) %>%
+  mutate(
+    design_cell = factor(
+      paste0("m=", mean_clus_size, ", rho=", marginal_rho),
+      levels = c("m=10, rho=0", "m=10, rho=0.5", "m=25, rho=0", "m=25, rho=0.5")
+    )
+  ) %>%
+  ggplot(aes(
+    x = bias,
+    y = design_cell,
+    colour = calibration_arm_label,
+    shape = calibration_arm_label,
+    group = calibration_arm_label
+  )) +
+  geom_vline(xintercept = 0, linetype = 2, colour = "grey35") +
+  geom_errorbarh(
+    aes(xmin = bias_mc_low, xmax = bias_mc_high),
+    height = 0,
+    linewidth = .7,
+    position = bias_position
+  ) +
+  geom_point(size = 2, position = bias_position) +
+  facet_grid(
+    method_label ~ standardized_beta_target,
+    labeller = labeller(
+      method_label = label_value,
+      standardized_beta_target = function(x) paste0("beta = ", x)
+    )
+  ) +
+  scale_colour_manual(values = arm_palette) +
+  scale_shape_manual(values = c(16, 17, 15)) +
+  scale_x_continuous(labels = number_format(accuracy = .05)) +
+  labs(
+    x = "Mean bias with 95% Monte Carlo CI",
+    y = NULL,
+    colour = "Calibration arm",
+    shape = "Calibration arm",
+    title = "Mean bias and Monte Carlo uncertainty by design cell",
+    subtitle = "Each point is one condition-method mean among eligible replications; all panels use the standardized effect scale"
+  ) +
+  theme_study5()
+```
+
+```{r bias-arm-summary, eval=results_available}
+bias_arm_summary %>%
+  transmute(
+    calibration_arm_label,
+    method_label,
+    cells,
+    mean_bias = round(mean_bias, 3),
+    bias_mc_se = round(bias_mc_se, 4),
+    bias_mc_ci = sprintf("[%.3f, %.3f]", bias_mc_low, bias_mc_high),
+    mean_absolute_bias = round(mean_absolute_bias, 3),
+    cells_bias_ci_excludes_zero
+  ) %>%
+  kable(
+    col.names = c(
+      "Calibration arm", "Method", "Cells", "Mean bias", "MC SE",
+      "95% MC CI", "Mean |bias|", "Cell CIs excluding zero"
+    ),
+    caption = paste(
+      "Equal-cell-weighted arm summaries. The arm MC SE propagates independent",
+      "cell-level Monte Carlo uncertainty; cell counts are out of 12."
+    )
+  )
+```
+
+The oracle arm-average intervals all include zero, and only zero or one of its
+12 cell intervals excludes zero in each arm, as expected under correct
+centering. In contrast, legacy calibration produces reliably negative
+arm-average bias for Fuller (95% MC CI [-.063, -.054]) and 2S-PA
+([-.070, -.060]). Shape preservation reverses the direction: the corrected
+methods are generally positively biased for non-null effects.
+Partial-reliability calibration reduces the arm-average bias relative to marginal
+calibration for 2S-PA (.081 versus .114) and MSEM (.050 versus .072), but does
+not eliminate it.
+
+Arm means can conceal cancellation. Legacy-arm MSEM has mean bias near zero
+(-.006; 95% MC CI [-.015, .003]) but mean absolute bias .104, and 9 of 12 cell
+intervals exclude zero. The cell plot is therefore primary; the arm table is a
+compact summary rather than evidence that a near-zero average implies
+condition-level centering.
+
+The bias and coverage evidence also rule out a one-mechanism interpretation.
+Fuller overcovers under fixed-shape calibration despite modest positive bias,
+so its conservative interval behavior dominates its centering error. 2S-PA
+combines larger positive bias with overcoverage because uncertainty is highly
+right-skewed and coverage is conditional on successful fits. MSEM's positive
+non-null bias, lower typical SE ratios, and effect-specific undercoverage are
+more mutually aligned. Because 1,000 replications make the Monte Carlo
+intervals narrow, exclusion of zero should be interpreted together with bias
+magnitude rather than as a standalone practical-significance test.
+
+## Centering bias versus typical interval width
+
+```{r bias-se-plot, eval=results_available, fig.width=10, fig.height=7.2}
+performance %>%
+  filter(method %in% corrected_methods) %>%
+  mutate(
+    design_cell = factor(
+      paste0("m=", mean_clus_size, ", rho=", marginal_rho),
+      levels = c("m=10, rho=0", "m=10, rho=0.5", "m=25, rho=0", "m=25, rho=0.5")
+    )
+  ) %>%
+  ggplot(aes(
+    x = bias,
+    y = typical_se_ratio,
+    colour = calibration_arm_label,
+    shape = design_cell
+  )) +
+  geom_vline(xintercept = 0, linetype = 2, colour = "grey45") +
+  geom_hline(yintercept = 1, linetype = 2, colour = "grey45") +
+  geom_point(alpha = .85, size = 2) +
+  facet_grid(
+    method_label ~ standardized_beta_target,
+    labeller = labeller(
+      method_label = label_value,
+      standardized_beta_target = function(x) paste0("beta = ", x)
+    )
+  ) +
+  scale_colour_manual(values = arm_palette) +
+  scale_shape_manual(values = c(16, 17, 15, 18)) +
+  scale_y_continuous(breaks = seq(.25, 2, .25), limits = c(.3, 1.9)) +
+  labs(
+    x = "Bias on standardized focal-effect scale",
+    y = "Median model SE / empirical SD",
+    colour = "Calibration arm",
+    shape = "Design cell",
+    title = "Separate interval-width failure from centering bias",
+    subtitle = "Corrected/latent methods only; median SE prevents one pathological fit from controlling the scale"
+  ) +
+  guides(
+    shape = guide_legend(order = 1, nrow = 1, byrow = TRUE),
+    colour = guide_legend(order = 2, nrow = 1, byrow = TRUE)
+  ) +
+  theme_study5() +
+  theme(legend.box = "vertical")
+```
+
+The robust plot answers a “typical replication” question. It is deliberately
+restricted to Fuller, 2S-PA, and MSEM because naive dual BLUP has catastrophic
+cell means that make the focal scale unreadable. It uses the median model SE
+within each cell rather than the mean because model SEs have a very long right
+tail. This change does not erase the tail: the next audit reports it directly.
+
+The distinction between typical and mean interval width is scientifically
+important. In the fixed-shape arms, the median cell mean-SE/empirical-SD ratio
+is about 1.4--1.9 for Fuller and 2S-PA, consistent with conservative average
+width. Yet the median-SE/empirical-SD ratio for 2S-PA is only about .55. Thus
+2S-PA overcoverage is not produced by uniformly wide intervals. A small number
+of very large standard errors, dependence between the estimated effect and its
+estimated uncertainty, and conditioning on successful fits all contribute.
+MSEM has the same right-skewed-SE signature but substantially less overcoverage.
+
+## Outlier and instability audit
+
+```{r outlier-audit, eval=results_available}
+tibble::tribble(
+  ~Diagnostic, ~Observed_result, ~Interpretation,
+  "Naive dual BLUP worst cell",
+  paste0(
+    "Condition ", worst_naive_cell$condition_id,
+    "; cell bias = ", formatC(worst_naive_cell$bias, digits = 4, format = "g")
+  ),
+  "Catastrophic ratio estimates are off-scale; naive BLUP is excluded from the mechanism plot but retained in coverage summaries.",
+  "Largest MSEM model SE",
+  paste0(
+    "Condition ", largest_msem_se$condition_id,
+    "; max SE = ", round(largest_msem_se_profile$maximum_se, 2),
+    "; cell median SE = ", round(largest_msem_se_profile$median_se, 3),
+    "; 99th percentile = ", round(largest_msem_se_profile$p99_se, 2)
+  ),
+  "One replication inflated the cell mean SE and the original y-axis; median SE is the appropriate robust display statistic.",
+  "Affected MSEM cell",
+  paste0(
+    "Mean-SE/SD = ", round(largest_msem_se_cell$mean_se_ratio, 3),
+    "; median-SE/SD = ", round(largest_msem_se_cell$typical_se_ratio, 3),
+    "; coverage = ", percent(largest_msem_se_cell$coverage, accuracy = .1),
+    " (", largest_msem_se_cell$n_eligible, " eligible)"
+  ),
+  "The extreme SE is real numerical/statistical instability, but it should be isolated rather than allowed to determine the visual scale."
+) %>%
+  kable(caption = "Explicit audit of observations omitted or robustified in the mechanism plot.")
+```
+
+The affected MSEM cell is the legacy `solve-G_22` ($\tau_1^2$), $m=25$,
+$\rho=0$,
+$\beta=.4$ condition. Its largest eligible SE is
+`r round(largest_msem_se_profile$maximum_se, 2)`, compared with a median of
+`r round(largest_msem_se_profile$median_se, 3)`. The original mean-SE ratio of
+`r round(largest_msem_se_cell$mean_se_ratio, 3)` was therefore a tail diagnostic,
+not a representative interval-width estimate. Keeping it in the audit and
+using a median in the plot makes both facts visible.
+
+# Conclusions and decision
+
+## What Study 5 establishes
+
+1. **Low posterior reliability is not, by itself, the explanation for the poor
+   coverage in Study 2.** When low reliability was produced by changing only
+   the random-slope variance ($\tau_1^2$), the manipulation also created an
+   unusual random-effects covariance structure. Holding that structure fixed
+   removed much of the severe undercoverage for the corrected methods, while
+   oracle coverage remained near 95%. The clearest design lesson is therefore
+   to preserve covariance geometry when manipulating reliability. This result
+   supports continued use of posterior reliability as an information measure;
+   it does not show that every analysis based on that design will be calibrated.
+
+2. **Marginal and residualized posterior reliability describe different
+   information problems.** Marginal reliability concerns the slope as a whole.
+   Residualized reliability ($R_\eta$) concerns the part of the slope that
+   remains after accounting for its association with the random intercept. The
+   two definitions generate the same population condition when $\rho=0$. When
+   $\rho=.5$, calibration to $R_\eta$ improves MSEM coverage, especially for
+   non-null effects. However, that arm also increases marginal reliability from
+   .25 to about .364 and lowers $\sigma$, so Study 5 does not isolate
+   estimand alignment from a general increase in slope information. It also
+   does not remove the conservative coverage of Fuller or 2S-PA. Thus
+   $R_\eta$ is a useful diagnostic and sensitivity factor, not evidence that
+   different studies require different primary reliability targets.
+
+3. **The null conditions are tests of false-positive control, not merely
+   another set of coverage cells.** With the two-sided CI-inversion rule used
+   here, conditional Type I error at $\beta=0$ is exactly one minus coverage.
+   Legacy-arm MSEM looks nominal when averaged across conditions (5.2%), but
+   its two correlated-intercept/slope cells reject 8.1% and 8.7% of the time;
+   conservative cells at $\rho=0$ conceal this inflation. Naive BLUP rejects
+   about 8%--9% of the time in both fixed-shape arms. In contrast, Fuller and
+   2S-PA usually reject in fewer than 1% of eligible null replications. Those
+   methods are not nominal; they are strongly conservative.
+
+4. **Bias and false-positive error answer related but noninterchangeable
+   questions.** Bias can make false positives favor one direction, as in one
+   legacy-arm MSEM condition. Yet another MSEM condition has little mean bias
+   and inflated Type I error in both directions, indicating a problem with
+   interval scale or tail behavior. Conversely, 2S-PA can have visible bias and
+   still reject too rarely because its intervals are wide. A methods evaluation
+   therefore needs both bias and rejection-rate results, with Monte Carlo
+   uncertainty around each.
+
+5. **Neither overall coverage nor an arm-level average is an adequate summary.**
+   Averaging can make liberal and conservative conditions appear nominal.
+   Conditional coverage can also look excellent when many replications never
+   produce an eligible estimate. The minimum reporting set is conditional
+   coverage, eligibility, the probability of both success and coverage, null
+   Type I error in each direction, mean and absolute bias, empirical sampling
+   variability, and typical as well as tail-sensitive interval width.
+
+## What the results imply for each estimator
+
+- **Oracle analysis is the calibration anchor.** Its coverage is approximately
+  95%, its null Type I error is 4.8%--5.3% across arms, and every replication is
+  eligible. It shows that the structural regression itself can be estimated
+  properly when the true latent scores are observed. It is not a feasible
+  analysis for empirical data, but it is the standard against which the proxy
+  methods should be judged.
+
+- **Fuller is stable and comparatively low-bias, but its intervals are too
+  conservative.** In the fixed-shape arms it is always eligible, has
+  arm-average bias of .024--.028, and covers 98.5%--98.8% rather than 95%.
+  Its null Type I error is only .2%--.6%. Fuller is therefore useful as a
+  point-estimation comparator, but the present interval procedure should not be
+  described as calibrated. The overcoverage suggests a likely cost in power,
+  which should be measured directly rather than inferred from coverage alone.
+
+- **2S-PA combines conservative intervals with selective availability.** Its
+  fixed-shape conditional coverage is 98.8%--98.9%, but only about 71% of
+  marginal-reliability replications and 83% of partial-reliability replications
+  are eligible. Its arm-average bias (.114 and .081) also exceeds Fuller's.
+  High coverage among the subset of successful fits is therefore not evidence
+  that 2S-PA is the safer procedure overall. It remains important for continuity
+  with Lai, but eligibility and joint success-and-cover performance must be
+  treated as primary results, not footnotes.
+
+- **MSEM gives the best overall balance among the feasible methods in this
+  grid, but it is not yet uniformly calibrated.** In the two fixed-shape arms,
+  eligibility is 97.4% and 98.7% and conditional coverage is 94.5% and 96.1%.
+  These values are closer to the nominal target than Fuller's or 2S-PA's, and
+  partial-reliability calibration repairs much of the non-null undercoverage at
+  $\rho=.5$. Nevertheless, some cells remain liberal or conservative, its
+  fixed-shape arm-average bias is .072 and .050, and a small number of fits have
+  extreme standard errors. MSEM should be the primary feasible estimator to
+  refine and compare, not be conflated with the oracle calibration benchmark.
+
+- **Naive dual-BLUP regression is not suitable for inferential use here.** Its
+  fixed-shape null Type I error is about 8.7% and 8.4%, and some conditions have
+  catastrophic bias. It may be retained as a negative control that illustrates
+  the consequences of ignoring measurement error, but it should not be treated
+  as a candidate analysis procedure.
+
+## Recommended design and analysis decision
+
+The next study should use a shape-preserving DGM rather than solve only for
+$\tau_1^2$. Across Studies 1--4, the shared primary manipulation should target
+marginal slope reliability while fixing $\tau_1^2/\tau_0^2$; residualized
+reliability should always be reported and should be matched in a smaller,
+correlated-condition sensitivity analysis. The oracle should remain the
+calibration anchor. MSEM should be the primary feasible estimator, Fuller the
+stable point-estimation comparator, and 2S-PA the continuity comparator with
+Lai. Naive BLUP should serve only as a negative control.
+
+The next comparison should also be judged cell by cell. For null effects, the
+primary criteria are total and directional Type I error, bias, and eligibility.
+For non-null effects, they are coverage, bias, interval width, eligibility, and
+directly estimated power. On the present evidence, no method is an unqualified
+winner: MSEM offers the most promising balance, Fuller trades calibration for
+strong conservatism and stability, and 2S-PA adds both conservatism and a
+substantial fit-selection problem. That is a sharper and more useful conclusion
+than choosing the method with the largest coverage percentage.
+
+# Recommended next analyses
+
+- Diagnose Fuller and 2S-PA interval construction under the fixed-shape DGM by
+  retaining replicate-level interval length, studying the joint distribution
+  of absolute error and SE, and comparing model-based intervals with a
+  bootstrap or empirical calibration. This directly tests whether
+  overcoverage comes from finite-sample SE formulas, a few tail fits, or
+  error-SE dependence.
+- For MSEM, inspect the small subset of extreme-SE fits and the relation between
+  latent-slope variance estimates, boundary proximity, bias, and coverage.
+  Report robust summaries, but do not automatically discard those fits.
+- Extend the design with $m=3$, $\rho=-.5$, and covariance-shape ratios of 0.5
+  and 2.0. Include a fixed raw-effect arm only after the information/geometry
+  comparison is preserved, so effect scaling is not re-confounded with the
+  covariance manipulation.
+- Pre-specify effect-specific calibration criteria. A method should not pass
+  merely because null overcoverage cancels non-null undercoverage in an arm
+  average.
+- Estimate power directly in the $\beta=.2$ and $\beta=.4$ conditions. Report
+  both rejection among eligible fits and the joint probability of obtaining an
+  eligible fit and rejecting the null. Do not use overcoverage alone as a proxy
+  for power, especially when methods differ in eligibility.
+- For every null cell, pre-specify the CI-inversion Type I error rate,
+  positive- and negative-direction rejection rates, eligibility, and the
+  cell-specific Monte Carlo acceptance range around .05. Treat an arm average
+  as secondary because conservative and anti-conservative cells can cancel.
+
+# Production execution
+
+Run the full Study 5 array from the repository root:
+
+```bash
+sbatch --array=1-36%36 \
+  --export=ALL,VIG_HALLQUIST_STUDY=5,VIG_HALLQUIST_N_SIM=1000,VIG_HALLQUIST_CHUNK_SIZE=1,VIG_HALLQUIST_OUT_DIR=outputs/vig_hallquist_study5 \
+  vig_hallquist_2026/slurm/vig_hallquist_condition_array.sbatch
+```
+
+After all 36 tasks finish, rebuild the aggregate replication and summary
+files without rerunning complete conditions:
+
+```bash
+Rscript vig_hallquist_2026/random_effects_structural_simulation.R \
+  1000 5 outputs/vig_hallquist_study5 1 NA NA NA 1
+```
+
+The run is small enough to materialize the aggregate replication file used by
+this report (36 conditions × 1,000 replications × 7 methods = 252,000 rows).
+
+# Limitations
+
+Coverage is conditional on the report's method-specific eligibility rule.
+This matters little for Fuller, which is always eligible, but materially
+changes the interpretation of 2S-PA. “Success and cover” is included as an
+operational complement; it is not a replacement for conventional conditional
+coverage because it treats every ineligible fit as a failure.
+
+The same qualification applies to null Type I error. The primary rate is
+conditional on an eligible fit. “Success and reject” is also shown, but it
+treats ineligible fits as non-rejections and can make a method with frequent
+failures appear safer than it is. Neither quantity alone defines the behavior
+of a real analysis pipeline unless the handling of failed fits is specified.
+
+The grid contains 100 clusters, one regular covariance shape, two
+moderate-to-large cluster sizes, nonnegative correlation, one reliability target, and
+three effect sizes. Conclusions about negative correlation, very small
+clusters, different covariance shapes, other reliability targets, or power
+are extrapolations. Arm-level means weight the 12 design cells equally and can
+hide effect-specific patterns, so cell-level results remain primary.
+
+At $\rho=0$, the marginal- and partial-reliability fixed-shape arms have the
+same population DGM but independent Monte Carlo draws. Small differences
+between them are therefore expected simulation noise and provide a useful
+internal check, not evidence for one calibration metric. Finally, the robust
+mechanism plot uses median SE to represent a typical replication; the report
+retains mean-SE ratios and the explicit outlier audit so that heavy-tailed
+uncertainty is not concealed.
+
+# ICC and posterior reliability form a regular crosswalk when covariance shape is fixed
+
+The practical distinction exposed by Study 5 is not that ICC and posterior
+reliability describe unrelated properties. It is that they become difficult to
+compare when a nominal reliability manipulation also changes the relative scale
+and conditioning of the random intercept and slope. Once the covariance shape
+is fixed, ICC and posterior reliability index the same underlying
+signal-to-noise continuum, although they summarize that continuum at different
+levels.
+
+For clarity, three quantities are distinguished here:
+
+- the **time-zero or intercept ICC**,
+  $\tau_0^2/(\tau_0^2+\sigma^2)$, describes the between-cluster share of
+  variation at the centered time origin;
+- the **conditional slope ICC**,
+  $\tau_{1\mid0}^2/(\tau_{1\mid0}^2+\sigma^2)$, uses
+  $\tau_{1\mid0}^2=\tau_1^2-\tau_{01}^2/\tau_0^2$ and describes
+  single-observation slope signal unique of the intercept; and
+- **posterior slope reliability** describes the fraction of marginal slope
+  variance resolved by the complete cluster design. It therefore depends not
+  only on variance partitioning but also on cluster size, time scores, and the
+  residual covariance matrix.
+
+Posterior reliability should not be expected to equal an ICC numerically. A
+cluster supplies several observations, so posterior reliability normally
+exceeds the corresponding single-observation ICC. “More similar” means that
+the ICC diagnostics and posterior reliability have a stable, monotone
+crosswalk once $\tau_1^2/\tau_0^2$, $\rho$, the residual correlation shape,
+and the cluster/time design are controlled. It does not mean that they are
+interchangeable percentages.
+
+```{r icc-crosswalk-data, include=FALSE}
+icc_crosswalk <- make_icc_posterior_reliability_crosswalk()
+icc_bridge_design <- select_design("iccbridge")
+
+study5_icc_geometry <- design %>%
+  distinct(
+    calibration_arm, mean_clus_size, marginal_rho,
+    achieved_reliability, intercept_icc, conditional_slope_icc,
+    slope_intercept_variance_ratio, G_condition_number
+  ) %>%
+  filter(calibration_arm %in% c(
+    "current_g22", "shape_preserving_marginal"
+  )) %>%
+  mutate(
+    calibration_arm_label = recode(
+      calibration_arm,
+      current_g22 = "Legacy: solve slope variance only",
+      shape_preserving_marginal = "Fixed covariance shape"
+    ),
+    m_label = paste0("m = ", mean_clus_size),
+    rho_label = paste0("rho = ", marginal_rho)
+  )
+
+icc_bridge_first_stage <- icc_bridge_design %>%
+  distinct(
+    calibration_arm, mean_clus_size, marginal_rho,
+    posterior_reliability_anchor, icc_anchor,
+    achieved_reliability, intercept_icc
+  ) %>%
+  mutate(
+    calibration_arm_label = recode(
+      calibration_arm,
+      posterior_reliability_targeted = "Hold posterior reliability fixed",
+      icc_anchored_at_m10 = "Hold reference ICC fixed"
+    ),
+    target_label = paste0("R anchor = ", posterior_reliability_anchor),
+    rho_label = paste0("rho = ", marginal_rho)
+  )
+```
+
+## Fixing the full shape keeps intercept and slope signal on comparable scales
+
+Every point in the next figure has marginal posterior slope reliability .25.
+The comparison is therefore about the observation-level variance partition
+that was required to produce that reliability. Under the fixed-shape arm,
+intercept and conditional-slope ICCs remain close because the intercept and
+slope variances are scaled together. Under the legacy solve-$G_{22}$ approach,
+the intercept ICC remains near .45 while the slope ICC collapses, especially
+when the random effects are correlated. Thus the legacy condition called “low
+reliability” is simultaneously a severe mismatch between intercept and slope
+signal.
+
+```{r icc-geometry-plot, fig.width=10, fig.height=5.8}
+ggplot(
+  study5_icc_geometry,
+  aes(
+    x = intercept_icc,
+    y = conditional_slope_icc,
+    colour = calibration_arm_label,
+    shape = m_label
+  )
+) +
+  geom_abline(
+    slope = 1,
+    intercept = 0,
+    linetype = 2,
+    colour = "grey45"
+  ) +
+  geom_point(size = 3.2, stroke = 1) +
+  facet_wrap(~ rho_label) +
+  scale_x_log10(labels = label_number(accuracy = .001)) +
+  scale_y_log10(labels = label_number(accuracy = .001)) +
+  scale_colour_manual(values = c(
+    "Legacy: solve slope variance only" = "#E15759",
+    "Fixed covariance shape" = "#4E79A7"
+  )) +
+  labs(
+    title = "Intercept and conditional-slope ICC under matched posterior reliability",
+    subtitle = "All points have marginal posterior slope reliability .25; dashed line denotes equal ICCs",
+    x = "Time-zero/intercept ICC (log scale)",
+    y = "Conditional slope ICC (log scale)",
+    colour = "Calibration",
+    shape = "Cluster size"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  )
+```
+
+The numerical crosswalk makes the scale mismatch concrete. At $m=25$ and
+$\rho=.5$, the legacy arm combines an intercept ICC of approximately
+`r round(study5_icc_geometry$intercept_icc[study5_icc_geometry$calibration_arm == "current_g22" & study5_icc_geometry$mean_clus_size == 25 & study5_icc_geometry$marginal_rho == .5], 3)`
+with a conditional slope ICC below .001. The fixed-shape arm instead has an
+intercept ICC of approximately
+`r round(study5_icc_geometry$intercept_icc[study5_icc_geometry$calibration_arm == "shape_preserving_marginal" & study5_icc_geometry$mean_clus_size == 25 & study5_icc_geometry$marginal_rho == .5], 3)`
+and a conditional slope ICC of approximately
+`r round(study5_icc_geometry$conditional_slope_icc[study5_icc_geometry$calibration_arm == "shape_preserving_marginal" & study5_icc_geometry$mean_clus_size == 25 & study5_icc_geometry$marginal_rho == .5], 3)`.
+Fixing shape therefore removes a second, unintended manipulation even though
+the posterior-reliability target itself is unchanged.
+
+```{r icc-geometry-table}
+study5_icc_geometry %>%
+  filter(marginal_rho == .5) %>%
+  transmute(
+    Calibration = calibration_arm_label,
+    m = mean_clus_size,
+    `Marginal posterior R` = achieved_reliability,
+    `Intercept ICC` = intercept_icc,
+    `Conditional slope ICC` = conditional_slope_icc,
+    `tau1^2 / tau0^2` = slope_intercept_variance_ratio,
+    `kappa(G)` = G_condition_number
+  ) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 4))) %>%
+  arrange(m, Calibration) %>%
+  kable(
+    caption = paste(
+      "ICC/posterior-reliability crosswalk in the correlated Study 5",
+      "conditions. All rows target marginal posterior reliability .25."
+    )
+  )
+```
+
+## ICC and posterior reliability ask different questions as cluster size changes
+
+The fact that ICC and posterior reliability are now connected does not decide
+which one should be the experimental factor. The bridge manifest makes that
+choice explicit. For each correlation and reliability level, the two arms are
+constructed to be the same DGM at $m=10$. One arm then recalibrates $\sigma$
+to hold posterior reliability fixed as $m$ changes; the other holds the
+$m=10$ intercept ICC fixed and allows posterior reliability to emerge. The
+arms therefore differ only away from the reference design.
+
+```{r icc-bridge-plot, fig.width=12, fig.height=7.5}
+ggplot(
+  icc_bridge_first_stage,
+  aes(
+    x = mean_clus_size,
+    y = achieved_reliability,
+    colour = calibration_arm_label,
+    shape = calibration_arm_label,
+    linetype = calibration_arm_label,
+    group = calibration_arm_label
+  )
+) +
+  geom_hline(
+    aes(yintercept = posterior_reliability_anchor),
+    colour = "grey65",
+    linewidth = .45
+  ) +
+  geom_line(linewidth = .8) +
+  geom_point(size = 2.4) +
+  facet_grid(rho_label ~ target_label) +
+  scale_x_continuous(breaks = c(3, 10, 25)) +
+  scale_y_continuous(limits = c(0, 1), labels = percent) +
+  scale_colour_manual(values = c(
+    "Hold posterior reliability fixed" = "#4E79A7",
+    "Hold reference ICC fixed" = "#B6992D"
+  )) +
+  labs(
+    title = "Posterior reliability under R-targeted and ICC-anchored bridge arms",
+    subtitle = "ICC anchors are selected so the two fixed-shape arms coincide at m = 10",
+    x = "Cluster size",
+    y = "Achieved marginal posterior slope reliability",
+    colour = "Bridge arm",
+    shape = "Bridge arm",
+    linetype = "Bridge arm"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  )
+```
+
+The posterior-reliability arm is flat by construction: “low,” “medium,” and
+“high” mean the same amount of resolved slope information at every cluster
+size. The ICC arm is also coherent, but answers a different question: with the
+same per-observation variance partition, how much more precisely is the slope
+measured when a cluster contributes more observations? Neither question is
+ill-posed. They should not, however, be presented as interchangeable designs.
+
+The anchor values also show why posterior reliability is not a disguised copy
+of Lai's ICC levels. Under the primary ratio-one geometry, posterior
+reliabilities .25, .50, and .80 at $m=10$ correspond to intercept ICCs around
+.03, .09--.10, and .29--.31, depending on $\rho$.
+
+```{r icc-anchor-table}
+icc_bridge_first_stage %>%
+  distinct(marginal_rho, posterior_reliability_anchor, icc_anchor) %>%
+  arrange(marginal_rho, posterior_reliability_anchor) %>%
+  mutate(
+    posterior_reliability_anchor = percent(
+      posterior_reliability_anchor,
+      accuracy = 1
+    ),
+    icc_anchor = round(icc_anchor, 4)
+  ) %>%
+  kable(
+    col.names = c("rho", "Posterior-R anchor at m=10", "Matched intercept ICC"),
+    caption = "Fixed-shape ICC anchors used by the runnable bridge manifest."
+  )
+```
+
+Conversely, holding a Lai-style ICC level fixed allows posterior reliability to
+increase markedly with cluster size. The next table uses Lai's RMS time scaling
+and the primary ratio-one covariance shape; ranges reflect
+$\rho\in\{-.5,0,.5\}$. It is a crosswalk, not a claim that these cells exactly
+reproduce every factor in Lai's original grid.
+
+```{r lai-icc-posterior-crosswalk-table}
+icc_crosswalk %>%
+  filter(
+    design_family == "Lai-style ICC reference",
+    slope_intercept_variance_ratio == 1
+  ) %>%
+  group_by(calibration_target_value, mean_clus_size) %>%
+  summarise(
+    posterior_R_min = min(achieved_marginal_reliability),
+    posterior_R_max = max(achieved_marginal_reliability),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    calibration_target_value = round(calibration_target_value, 2),
+    posterior_R_range = paste0(
+      round(posterior_R_min, 3), "--", round(posterior_R_max, 3)
+    )
+  ) %>%
+  dplyr::select(
+    `Lai-style intercept ICC` = calibration_target_value,
+    m = mean_clus_size,
+    `Marginal posterior-R range` = posterior_R_range
+  ) %>%
+  kable(
+    caption = paste(
+      "Posterior-reliability crosswalk for fixed-shape ratio-one",
+      "Lai-style ICC conditions under RMS time scaling."
+    )
+  )
+```
+
+## Why posterior reliability is primary, with ICC retained as a companion
+
+There is a genuine case for either design convention.
+
+**The case for ICC is familiarity and direct variance interpretation.** ICC is
+widely used in psychological multilevel research, is easy to specify without
+reference to a particular number or spacing of observations, and aligns the
+revised studies with Lai's presentation. Holding ICC fixed also describes a
+recognizable applied scenario: the observation-level signal-to-noise ratio is
+stable, while additional observations improve cluster-specific precision.
+
+**The limitation of ICC for the present hypotheses is that it does not hold
+the focal measurement problem constant.** The same ICC can imply very
+different posterior slope reliabilities at $m=3$ and $m=25$. Moreover, an
+intercept ICC alone does not identify slope precision unless the slope/intercept
+variance ratio, correlation, time design, and residual covariance are also
+specified. Study 5 shows why leaving that geometry implicit is consequential.
+
+**The case for posterior reliability is alignment with the inferential
+problem.** The principal hypotheses concern how estimators behave when an
+individual random slope is measured with low, moderate, or high precision.
+Posterior reliability incorporates all observations used to estimate that
+slope, including their number and time design. Holding it fixed permits a
+cleaner comparison of estimator behavior across cluster sizes and across the
+homogeneous and heterogeneous information profiles in Study 4.
+
+**The limitation of posterior-reliability calibration is that it can require
+unfamiliar ICCs.** In particular, maintaining low posterior reliability when
+$m$ is large requires a low observation-level ICC. The target also depends on
+population values of $G$ and $R$ and on the reference cluster design. These are
+not reasons to abandon it, but they require transparent manipulation checks and
+make the ICC crosswalk essential.
+
+The balanced decision is therefore to use **marginal posterior slope
+reliability as the primary experimental factor because it matches the focal
+measurement-error hypothesis**, while reporting intercept ICC, conditional
+slope ICC, and residualized reliability in every condition. The ICC-anchored
+bridge is a literature-facing robustness analysis: it reveals whether a
+conclusion depends on holding effective slope information constant rather than
+holding the per-observation variance partition constant. This is a choice of
+scientific comparison, not a claim that posterior reliability is universally
+superior to ICC.
+
+The implementation makes this distinction explicit. `study1v2` through
+`study4v2` are the amended fixed-shape studies, and `allv2` selects that series.
+The unsuffixed `study1` through `study4` selectors remain the legacy
+solve-$\tau_1^2$ pathways for exact comparison with prior outputs; `all` keeps
+its historical meaning. The separate `iccbridge` selector produces the paired
+108-condition bridge shown above. Manifest fields record `study_version`,
+`calibration_version`, the calibration metric and target, both posterior
+reliabilities, the ICC diagnostics, $\sigma$, the variance ratio, and
+$\kappa(G)$ so results from the two generations cannot be silently conflated.
+
+# Returning to Studies 1--4: one calibration framework with focused sensitivities
+
+Study 5 directly evaluated the Study 2 data-generating model, so its estimator
+results should not simply be projected onto Studies 1, 3, and 4. It does,
+however, diagnose a design problem shared by all four earlier studies: holding
+Level-1 residual variance fixed and solving for $\tau_1^2$ makes the intended
+reliability manipulation also change latent covariance geometry. The revision
+should remove that confound without replacing it with four different meanings
+of “reliability.”
+
+The recommended amendment is therefore **one common primary calibration and
+one common sensitivity strategy**. In every measurement process, fix the
+population intercept/slope covariance shape and solve for residual scale to
+attain the target *marginal slope reliability*. Always compute
+residualized-slope reliability, $R_\eta$, and use matched-$R_\eta$ conditions as focused
+sensitivities when the structural model includes both intercept and slope as
+predictors. The studies then differ in the role played by the latent slope, not
+in the definition of their primary reliability factor.
+
+## Study 5 supports a common primary target, not four different targets
+
+The intercept/slope variance ratio is not a minor implementation detail. In the
+legacy $\rho=.5$ conditions, targeting marginal reliability .25 by solving for
+$\tau_1^2$ drives $\tau_1^2/\tau_0^2$ from about .0065 at $m=10$ to .0011 at
+$m=25$; the corresponding condition number of $G$ increases from about 207 to
+1,259. The fixed-shape arms instead hold the ratio at 1 and have
+$\kappa(G)=3$. Thus the legacy reliability factor also becomes an increasingly
+severe covariance-degeneracy factor as cluster size grows.
+
+The fixed-shape marginal and partial arms are informative, but they do not
+hold the same total slope information at $\rho=.5$. Targeting marginal
+reliability at .25 produces $R_\eta\approx.162$--.163. Targeting
+$R_\eta=.25$ instead produces marginal reliability of approximately
+.363--.365 and a smaller residual scale. Consequently, the partial arm changes
+both estimand-aligned information and overall slope information.
+
+```{r coherence-evidence-table, eval=results_available}
+format_range <- function(x, digits = 3) {
+  x <- range(x, na.rm = TRUE)
+  if (diff(x) < 10^(-digits)) {
+    sprintf(paste0("%.", digits, "f"), mean(x))
+  } else {
+    paste0(
+      sprintf(paste0("%.", digits, "f"), x[[1]]),
+      "--",
+      sprintf(paste0("%.", digits, "f"), x[[2]])
+    )
+  }
+}
+
+coherence_design <- design %>%
+  filter(
+    calibration_arm %in% c(
+      "shape_preserving_marginal", "shape_preserving_partial"
+    ),
+    marginal_rho == .5
+  ) %>%
+  distinct(
+    calibration_arm, mean_clus_size, sigma,
+    achieved_reliability, achieved_partial_reliability
+  ) %>%
+  group_by(calibration_arm) %>%
+  summarise(
+    achieved_marginal_R = format_range(achieved_reliability),
+    achieved_partial_R = format_range(achieved_partial_reliability),
+    sigma_range = format_range(sigma),
+    .groups = "drop"
+  )
+
+coherence_msem <- performance %>%
+  filter(
+    method == "msem",
+    calibration_arm %in% c(
+      "shape_preserving_marginal", "shape_preserving_partial"
+    ),
+    marginal_rho == .5
+  ) %>%
+  group_by(calibration_arm) %>%
+  summarise(
+    msem_coverage = mean(coverage),
+    msem_eligibility = mean(convergence),
+    .groups = "drop"
+  )
+
+coherence_null <- null_performance %>%
+  filter(
+    method == "msem",
+    calibration_arm %in% c(
+      "shape_preserving_marginal", "shape_preserving_partial"
+    )
+  ) %>%
+  group_by(calibration_arm) %>%
+  summarise(
+    msem_null_type1 = mean(type1_error),
+    .groups = "drop"
+  )
+
+coherence_design %>%
+  left_join(coherence_msem, by = "calibration_arm") %>%
+  left_join(coherence_null, by = "calibration_arm") %>%
+  mutate(
+    calibration_arm = recode(
+      calibration_arm,
+      shape_preserving_marginal = "Target marginal R = .25",
+      shape_preserving_partial = "Target residualized R = .25"
+    ),
+    msem_coverage = percent(msem_coverage, accuracy = .1),
+    msem_eligibility = percent(msem_eligibility, accuracy = .1),
+    msem_null_type1 = percent(msem_null_type1, accuracy = .1)
+  ) %>%
+  dplyr::select(
+    calibration_arm, achieved_marginal_R, achieved_partial_R,
+    sigma_range, msem_coverage, msem_eligibility, msem_null_type1
+  ) %>%
+  kable(
+    col.names = c(
+      "Fixed-shape arm", "Marginal R at rho=.5",
+      "Residualized R at rho=.5", "sigma for m=10--25",
+      "MSEM coverage at rho=.5", "MSEM eligibility at rho=.5",
+      "MSEM null Type I error"
+    ),
+    caption = paste(
+      "Why the partial-reliability arm is a sensitivity rather than a",
+      "different primary calibration. Performance values are equal-cell",
+      "averages; null Type I error averages all four null cells per arm."
+    )
+  )
+```
+
+This comparison yields three conclusions. First, fixing covariance shape is
+the decisive repair: the marginal arm already moves MSEM close to nominal
+overall coverage and eliminates the catastrophic geometry of the legacy arm.
+Second, the partial arm improves MSEM coverage and eligibility in correlated
+conditions, but it also supplies more marginal slope information. Its benefit
+cannot be attributed uniquely to using the reliability definition aligned with
+the dual-predictor coefficient. Third, it does not resolve method-specific
+inference: Fuller and 2S-PA still cover about 99% at $\rho=.5$, and MSEM becomes
+somewhat conservative at the null. At $\rho=0$, the two fixed-shape DGMs are
+identical and their small performance differences are Monte Carlo noise.
+
+These findings argue against assigning residualized reliability as the primary
+target in Studies 2 and 4 while using marginal reliability in Study 1. Such a
+plan is theoretically defensible but makes a nominal reliability level mean
+different amounts of total slope information across studies. A common marginal
+target gives reviewers a stable comparison; $R_\eta$ then answers the narrower
+question of whether information unique of the intercept explains performance
+in correlated, dual-predictor settings.
+
+## Common primary calibration standard
+
+The revised studies should share the following design rules.
+
+1. **Use one covariance anchor.** Standardize the within-cluster time variable
+   in the same way in every process. Set $\tau_0^2=.81$ and use
+   $\tau_1^2/\tau_0^2=1$ for the primary design, so $\tau_1^2=.81$ before any
+   structural decomposition. Retain the planned intercept--slope correlations.
+   Because the variance ratio depends on the scale of time, the common time
+   standardization is part of this definition, not a cosmetic preprocessing
+   choice.
+
+2. **Target marginal slope reliability everywhere.** For each first-stage
+   process and each target (.25, .50, or .80), hold $G$ fixed and solve for the
+   Level-1 residual scale $\sigma$. Use the study-specific reference design
+   distribution---balanced cluster size in Studies 1--3 and the weighted
+   information profile in Study 4---but the same reliability formula and
+   solver. This keeps “low,” “medium,” and “high” reliability comparable across
+   the study series.
+
+3. **Always report $R_\eta$; manipulate it only in focused sensitivities.**
+   Store marginal and residualized reliability for every condition. Add a
+   matched-$R_\eta$ sensitivity only when $\rho\ne0$ and the focal slope enters
+   jointly with the intercept. Label that arm by both achieved reliabilities;
+   do not describe it as the same information condition as the marginal arm.
+
+4. **Separate measurement calibration from structural-effect calibration.**
+   First construct and calibrate the desired marginal $G$. Then add the
+   structural regression while preserving that marginal covariance. Verify
+   afterward that the residual covariance is positive definite and that the
+   generated process retains its intended $G$, reliability, standardized
+   effect, structural $R^2$, and residual outcome variance.
+
+5. **Use one manifest and audit vocabulary.** Retain $\tau_0^2$, $\tau_1^2$,
+   $\tau_{01}=\operatorname{Cov}(u_0,u_1)$,
+   $\tau_1^2/\tau_0^2$, the condition number of $G$, $\sigma$, both posterior
+   reliabilities, and the residualized slope variance. For heterogeneous
+   profiles, also retain the weighted mean, SD, IQR, minimum, and maximum of
+   cluster-specific reliability. Show these checks before estimator results.
+
+6. **Treat the variance ratio as a fixed anchor plus a robustness check.** The
+   full grids should use $\tau_1^2/\tau_0^2=1$. A smaller cross-study bridge
+   should repeat difficult conditions at ratios 0.5 and 2.0. If conclusions
+   change materially, the ratio should become a reported design factor; if they
+   do not, the primary grids need not be tripled. Study 5 alone cannot establish
+   that ratio 1 is optimal.
+
+7. **Retain the legacy arm only as a bridge.** The original `solve-G_22`
+   conditions, which solve for $\tau_1^2$ while fixing $\sigma=1$, should not
+   support the revised primary conclusions. Preserve a matched subset to show
+   which original findings were geometry-dependent, and label it as a different
+   DGM rather than another level of the revised reliability factor.
+
+## Study-specific roles within the common design
+
+The four studies do require different implementation checks, but not different
+primary reliability definitions. Each study uses the same marginal-reliability
+calibration; the special handling follows from the number and structural role
+of its measured latent processes.
+
+| Study | What changes across studies | Shared primary calibration | Necessary study-specific check |
+|:--|:--|:--|:--|
+| **1: BLUP as outcome** | A measured latent slope is the structural outcome | Target marginal slope reliability with fixed $G$ | Calibrate the marginal slope before decomposing it into the part predicted by $w$ and residual variation; verify that the decomposition reconstructs the target marginal $G$. |
+| **2: BLUP as predictor** | The measured intercept and slope jointly predict an observed outcome | Target marginal slope reliability with fixed $G$ | Report $R_\eta$ in every cell and include matched-$R_\eta$ sensitivities for correlated, low-information conditions. Study 5 already supplies the central bridge. |
+| **3: BLUP as predictor and outcome** | Two separate repeated-measures processes contribute a predictor slope and an outcome slope | Apply the same marginal-reliability calibration independently to both processes | Verify both marginal covariance matrices after constructing the structural relation; use $R_\eta$ sensitivity on the predictor process rather than giving the two processes different primary targets. |
+| **4: heterogeneous cluster information** | The distribution, rather than only the mean, of cluster information is manipulated | Match the weighted mean marginal slope reliability with fixed $G$ | Solve one profile-specific $\sigma$ while preserving the intended reliability dispersion; compare row-specific and average measurement corrections and report the full reliability distribution. |
+
+### Study 1: one measured outcome process
+
+Study 1 is the simplest application of the common rule. The latent slope is the
+outcome of the structural regression, so marginal slope reliability is both the
+cross-study primary target and the reliability most directly tied to the
+measured outcome. Begin with the common marginal $G$, solve for $\sigma$, and
+only then use the standardized effect of $w$ to split the total slope into
+explained and residual variation. The resulting residual random-effects
+covariance must reconstruct the target marginal $G$ after the effect of $w$ is
+integrated out. $R_\eta$ is reported because correlated intercepts affect slope
+precision, but no full matched-$R_\eta$ arm is needed unless the Study 1 bridge
+shows an unexpected correlation-specific failure.
+
+The revised report should reassess the original claims about attenuation,
+Fuller overcoverage, 2S-PA standard errors, and agreement with the direct MLM.
+The direct MLM and oracle should remain distinct benchmarks: the oracle checks
+the structural target when the latent slope is observed, whereas the direct MLM
+checks whether a correctly specified one-stage analysis recovers it from the
+repeated measures.
+
+### Study 2: one measured predictor process
+
+Study 2 is the closest direct beneficiary of Study 5. Because the structural
+model includes both the random intercept and random slope as predictors, the
+focal slope coefficient concerns slope variation remaining after the intercept
+is accounted for. That fact justifies treating $R_\eta$ as an important
+estimand-aligned diagnostic, but Study 5 does not justify changing the primary
+reliability definition: the partial-target arm also increases marginal slope
+reliability and improves numerical eligibility. The revised full grid should
+therefore use the common fixed-shape marginal calibration. The matched-$R_\eta$
+arm should be retained for the correlated stress cells, and the original arm
+should appear only as a legacy comparison.
+
+The estimator hierarchy should follow the Study 5 conclusions: use the oracle
+as the calibration anchor, MSEM as the primary feasible estimator to evaluate,
+Fuller as the stable point-estimation comparator, 2S-PA as the comparison with
+Lai that requires joint reporting of eligibility and performance, and naive
+dual-BLUP regression as a negative control. The full Study 2 grid should not be
+rerun until a smaller bridge reproduces the Study 5 pattern at cluster sizes 3
+and 5, negative $\rho$, and reliability targets .50 and .80.
+
+### Study 3: apply the same rule twice
+
+Study 3 has two measurement problems, but that is a reason to reuse the same
+calibration module twice rather than define two primary meanings of
+reliability. Fix a marginal covariance shape for each process and solve its own
+residual scale to attain the requested marginal slope reliability. The
+predictor process still requires $R_\eta$ because its intercept and slope enter
+jointly; the outcome process does not need a different primary target merely
+because its slope is on the left side of the structural equation.
+
+The structural equation that generates the second slope must be applied without
+changing its intended marginal covariance. This verification is especially
+important because its residual slope variance depends on the structural effect.
+A focused sensitivity should match $R_\eta$ on the predictor process in
+correlated conditions while leaving the outcome process under the common
+marginal calibration. This asks the estimand-alignment question directly
+without making the main Study 3 grid asymmetric or incomparable with the other
+studies.
+
+### Study 4: isolate heterogeneity rather than regenerate the Study 2 confound
+
+Study 4 is intended to vary the dispersion of cluster information while
+holding mean reliability comparable. Its revised calibration should therefore
+hold the entire $G$ matrix fixed across information profiles. For each profile
+and target weighted mean *marginal* reliability, solve one common residual scale
+for that profile. The cluster-size pattern then creates the intended
+distribution of individual reliabilities, while covariance geometry no longer
+changes as a by-product of matching their mean.
+
+The information-matched falsification condition remains valuable and should be
+preserved. Its calibration audit should demonstrate comparable weighted mean
+marginal reliability and reduced dispersion of the full measurement matrices,
+not only equality of trial-count means. Because the focal predictor model is
+dual-predictor, also report the distribution of $R_\eta$ and include a
+matched-$R_\eta$ sensitivity for the severe correlated profile. Retain the
+row-specific versus average-measurement comparisons, because those are the
+study's substantive focus, and add the eligibility, Type I error, and
+tail-sensitive diagnostics used in Study 5.
+
+## Refactor once and make the studies thin wrappers
+
+The code should mirror the conceptual argument. A single
+measurement-calibration function should accept the reference $Z_i$ and residual-correlation
+matrices, $\tau_0^2$, the variance ratio, $\rho$, and the target marginal slope
+reliability. It should construct $G$, solve for $\sigma$, and return both
+reliabilities plus the geometry diagnostics. Study-specific design functions
+should supply only the reference cluster distribution and the number of
+measurement processes.
+
+Structural-effect calibration should remain a separate second step. Study 1
+decomposes a marginal slope into a component predicted by $w$ and a residual;
+Studies 2 and 4 calibrate regression of an observed outcome on the latent
+intercept and slope; Study 3 calibrates the relation between two latent
+processes. Each wrapper should verify that this second step reconstructs the
+marginal covariance produced by the shared first step.
+
+Every condition should carry a `calibration_version` and an explicit
+`calibration_target` such as `marginal_slope`. The legacy key `current_g22` may
+remain for compatibility, but reader-facing outputs should call it the legacy
+`solve-G_22` arm and identify $\tau_1^2$ as the solved quantity. Use matched
+random-number streams across bridge arms when practical, and never overwrite
+the original Study 1--4 outputs.
+
+## Staged rerun and decision gates
+
+1. **Validate the shared calibration module without fitting the estimators.**
+   Exercise every cluster-size distribution, $\rho\in\{-.5,0,.5\}$,
+   reliability target, and variance-ratio sensitivity. Require the achieved
+   target to agree with the requested marginal reliability to numerical
+   tolerance, the requested variance ratio to remain fixed, $G$ and every
+   structural residual covariance to be positive definite, and the generated
+   marginal covariance to reconstruct the stored target. At $\rho=0$, marginal
+   and residualized reliability must coincide.
+
+2. **Run small study-specific bridges.** Use at least one null and one non-null
+   effect, the smallest and a moderate cluster size, and zero plus nonzero
+   correlation. Study 5 already supplies the central Study 2 bridge at
+   reliability .25 and $m=10,25$; extend it only to the missing boundaries:
+   $m=3,5$, $\rho=-.5$, and reliability .50 and .80. For Studies 1 and 3,
+   compare the legacy and common-primary DGMs and add only the relevant
+   predictor-side $R_\eta$ sensitivity. For Study 4, compare the legacy and
+   common-primary DGMs across the homogeneous, severe, and information-matched
+   profiles before filling the full heterogeneity grid.
+
+3. **Use the oracle as the DGM gate.** In every bridge cell, oracle coverage and
+   null Type I error should fall within the cell-specific Monte Carlo acceptance
+   range around .95 and .05, respectively. A failed oracle gate is a reason to
+   repair the DGM, truth scaling, or interval construction before comparing
+   proxy methods. It is not evidence against a proxy estimator.
+
+4. **Then run the full primary grids.** Once the common-primary bridges pass,
+   rerun Studies 1--4 with $\tau_1^2/\tau_0^2=1$ and marginal reliability as the
+   primary factor. Run the matched-$R_\eta$ and variance-ratio conditions as a
+   smaller, clearly labeled sensitivity module rather than crossing them with
+   every factor. This keeps the main design interpretable and the computational
+   expansion bounded.
+
+5. **Use one inferential reporting template.** For null effects, report
+   cell-specific total and directional Type I error, eligibility, and bias with
+   Monte Carlo intervals. For non-null effects, report bias, coverage, direct
+   power, interval width, eligibility, and joint success-and-cover or
+   success-and-reject probabilities. Include empirical SD and tail summaries.
+   Each revised report should state whether an original conclusion is
+   preserved, weakened, reversed, or shown to depend on legacy geometry.
+
+## Reviewer-facing explanation
+
+The common design can be described without asking readers to learn four
+calibration systems:
+
+> Across all studies, we fixed the population covariance structure of the
+> random intercept and slope and manipulated the precision of slope measurement
+> by changing Level-1 residual variance. The residual variance was selected so
+> that expected marginal posterior slope reliability equaled .25, .50, or .80
+> under the study's cluster design. We also report the posterior reliability of
+> slope variation unique of the intercept. In models that include both random
+> effects as predictors, matched unique-slope-reliability conditions provide a
+> planned sensitivity analysis rather than a different definition of the main
+> reliability factor.
+
+This account gives the study series one manipulation, one population covariance
+anchor, and one set of manipulation checks. The studies remain substantively
+distinct because they ask what happens when an imperfectly measured slope is
+an outcome (Study 1), a predictor (Study 2), both a predictor and outcome across
+two processes (Study 3), or measured with heterogeneous information across
+clusters (Study 4). Those are meaningful differences in the role and structure
+of measurement error; they do not require changing what the primary reliability
+factor means.
+
+## Final recommendation and priority order
+
+The preferred plan is therefore **common marginal calibration for all primary
+grids, mandatory reporting of $R_\eta$, and targeted $R_\eta$ sensitivity
+conditions**. This is more coherent than the earlier proposal to make
+residualized reliability primary in Studies 2 and 4 and to use an asymmetric
+target in Study 3. It is also closer to what Study 5 establishes: covariance
+geometry clearly matters, whereas the partial-reliability arm is beneficial for
+MSEM but is not a clean test of reliability definition alone.
+
+Implementation should proceed in this order: build and test the shared
+calibration module; complete the missing Study 2 boundary bridge; validate the
+Study 4 heterogeneity bridge; run the smaller Study 1 and Study 3 bridges; and
+only then launch the four full primary grids. This sequence resolves the
+highest-risk extrapolations before committing the largest computational effort.

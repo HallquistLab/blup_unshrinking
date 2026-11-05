@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+title: "REPAIR: Random-effect prediction adjustment for inference in regression"
+message: "If you use this code, please cite the version-specific Zenodo record and the repository."
+type: software
+authors:
+  - family-names: Vig
+    given-names: Zach
+  - family-names: Hallquist
+    given-names: Michael
+abstract: >-
+  Reproducible R code, simulation drivers, analyses, and technical notes for
+  the REPAIR study by Vig and Hallquist (2026), which evaluates random-effect
+  prediction adjustment for inference in regression.
+repository-code: "https://github.com/HallquistLab/blup_unshrinking"
+url: "https://github.com/HallquistLab/blup_unshrinking"
+license: GPL-3.0-only
+keywords:
+  - BLUP
+  - empirical Bayes
+  - multilevel models
+  - measurement error
+  - score correction
+  - simulation
+date-released: 2026-11-05
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.23982336"
+    description: "Version 1.0.0 software release"

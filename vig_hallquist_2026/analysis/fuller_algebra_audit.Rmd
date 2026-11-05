@@ -1,0 +1,876 @@
+---
+title: "Audit of the Fuller (1987) Algebra in the VH Simulations"
+author: "Simulation and implementation audit"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: hide
+params:
+  output_dir: "outputs/fuller_algebra_audit"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center",
+  dpi = 120
+)
+suppressPackageStartupMessages({
+  library(data.table)
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(knitr)
+  library(scales)
+})
+
+input_path <- tryCatch(knitr::current_input(dir = TRUE), error = function(e) "")
+find_repo_root <- function(start_paths) {
+  for (start_path in unique(start_paths[nzchar(start_paths)])) {
+    candidate <- normalizePath(start_path, mustWork = FALSE)
+    for (level in 0:5) {
+      if (
+        file.exists(file.path(candidate, "R", "stage2_estimators.R")) &&
+        dir.exists(file.path(candidate, "vig_hallquist_2026"))
+      ) {
+        return(normalizePath(candidate, mustWork = TRUE))
+      }
+      parent <- dirname(candidate)
+      if (identical(parent, candidate)) break
+      candidate <- parent
+    }
+  }
+  stop("Could not locate the repository root for the Fuller audit report.")
+}
+repo_root <- find_repo_root(c(
+  getwd(),
+  if (nzchar(input_path)) dirname(input_path) else "",
+  if (nzchar(input_path)) dirname(file.path(getwd(), input_path)) else ""
+))
+resolve_repo_path <- function(path) {
+  if (grepl("^/", path)) path else file.path(repo_root, path)
+}
+
+output_dir <- resolve_repo_path(params$output_dir)
+replication_path <- file.path(
+  output_dir, "fuller_algebra_replication_results.csv.gz"
+)
+summary_path <- file.path(output_dir, "fuller_algebra_summary.csv")
+validation_path <- file.path(
+  output_dir, "fuller_algebra_production_validation.csv"
+)
+stopifnot(
+  file.exists(replication_path),
+  file.exists(summary_path),
+  file.exists(validation_path)
+)
+
+replications <- fread(replication_path) %>% as_tibble()
+performance <- fread(summary_path) %>% as_tibble()
+validation <- fread(validation_path) %>% as_tibble()
+
+scenario_labels <- c(
+  no_measurement_error = "No measurement error",
+  outcome_homoskedastic = "Outcome error: constant",
+  outcome_heteroskedastic = "Outcome error: heterogeneous",
+  predictor_only = "Predictor error only",
+  both_homoskedastic = "Both errors: constant",
+  both_heteroskedastic = "Both errors: heterogeneous"
+)
+variant_labels <- c(
+  current = "Former production (bug)",
+  cross_moment_fixed = "Corrected VH (stabilized)",
+  documented_preliminary = "Corrected + Fuller preliminary",
+  documented_full = "Corrected + Fuller equations"
+)
+geometry_labels <- c(
+  regular = "Regular G shape",
+  weak_shape = "Ill-conditioned G shape"
+)
+variant_palette <- c(
+  "Former production (bug)" = "#E15759",
+  "Corrected VH (stabilized)" = "#4E79A7",
+  "Corrected + Fuller preliminary" = "#B6992D",
+  "Corrected + Fuller equations" = "#59A14F"
+)
+
+performance <- performance %>%
+  mutate(
+    scenario_label = factor(
+      unname(scenario_labels[scenario]), levels = unname(scenario_labels)
+    ),
+    variant_label = factor(
+      unname(variant_labels[variant]), levels = unname(variant_labels)
+    ),
+    geometry_label = factor(
+      unname(geometry_labels[geometry]), levels = unname(geometry_labels)
+    )
+  )
+
+replications <- replications %>%
+  mutate(
+    eligible = status == "ok" & is.finite(estimate) & is.finite(se) & se > 0,
+    covered = eligible & ci_low <= truth & ci_high >= truth,
+    scenario_label = factor(
+      unname(scenario_labels[scenario]), levels = unname(scenario_labels)
+    ),
+    variant_label = factor(
+      unname(variant_labels[variant]), levels = unname(variant_labels)
+    ),
+    geometry_label = factor(
+      unname(geometry_labels[geometry]), levels = unname(geometry_labels)
+    )
+  )
+
+theme_audit <- function() {
+  theme_bw(base_size = 12) +
+    theme(
+      legend.position = "bottom",
+      panel.grid.minor = element_blank(),
+      strip.background = element_rect(fill = "grey95")
+    )
+}
+
+fmt <- function(x, digits = 3) formatC(x, digits = digits, format = "f")
+
+outcome_focal <- performance %>%
+  filter(
+    scenario == "outcome_homoskedastic", m == 200,
+    variant %in% c("current", "cross_moment_fixed")
+  )
+regular_current <- outcome_focal %>%
+  filter(geometry == "regular", variant == "current") %>% slice(1)
+regular_fixed <- outcome_focal %>%
+  filter(geometry == "regular", variant == "cross_moment_fixed") %>% slice(1)
+weak_current <- outcome_focal %>%
+  filter(geometry == "weak_shape", variant == "current") %>% slice(1)
+weak_fixed <- outcome_focal %>%
+  filter(geometry == "weak_shape", variant == "cross_moment_fixed") %>% slice(1)
+
+predictor_m200 <- performance %>%
+  filter(
+    m == 200,
+    scenario %in% c(
+      "predictor_only", "both_homoskedastic", "both_heteroskedastic"
+    )
+  ) %>%
+  group_by(variant, variant_label) %>%
+  summarise(
+    coverage = mean(coverage),
+    bias = mean(bias),
+    median_cell_mean_se_ratio = median(mean_se_ratio),
+    median_cell_median_se_ratio = median(median_se_ratio),
+    maximum_cell_mean_se_ratio = max(mean_se_ratio),
+    .groups = "drop"
+  )
+
+overall <- performance %>%
+  group_by(variant, variant_label) %>%
+  summarise(
+    equal_cell_coverage = mean(coverage),
+    equal_cell_bias = mean(bias),
+    .groups = "drop"
+  )
+
+mc_band <- c(
+  qbinom(.025, 1000, .95) / 1000,
+  qbinom(.975, 1000, .95) / 1000
+)
+```
+
+# Executive conclusion
+
+The flagged line was a **real algebraic error**, not a harmless coding style
+choice. Fuller (1987, pp. 193--194, Equations 3.1.19 and 3.1.26) subtracts the
+predictor--outcome measurement-error covariance from the preliminary
+predictor--outcome cross moment. The former implementation instead subtracted
+the scalar *outcome measurement-error variance* from every element of that
+cross-moment vector. R silently recycled the scalar, so the calculation ran
+without warning.
+
+This error is now corrected in `fit_fuller_dual_core()`. The estimator accepts
+separate predictor--outcome covariance columns, uses them throughout the
+Fuller equations, and defaults omitted columns to exact zeros. VH Studies 1--4
+also create and pass named zero columns, making their separate-process
+assumption explicit in the saved pipeline diagnostics. The pipeline version
+was advanced so pre-correction results cannot be mistaken for corrected runs.
+
+This error affects any pathway with an error-prone Stage-2 outcome---VH Studies
+1 and 3---but it is algebraically inactive in Studies 2 and 4 because their
+Stage-2 outcome-error variance is zero. It therefore cannot explain the severe
+non-null undercoverage in Studies 2 and 4. It is, however, a plausible and now
+demonstrated contributor to Fuller's overcoverage in Studies 1 and 3.
+
+In the clean outcome-error-only simulation with 200 clusters:
+
+- Under regular covariance geometry, former-production coverage is
+  `r percent(regular_current$coverage, accuracy=.1)` and the mean SE is
+  `r fmt(regular_current$mean_se_ratio, 2)` times the empirical SD. Fixing only
+  the erroneous cross moment gives `r percent(regular_fixed$coverage, accuracy=.1)`
+  coverage and an SE ratio of `r fmt(regular_fixed$mean_se_ratio, 2)`.
+- Under the ill-conditioned covariance shape, former-production coverage is
+  `r percent(weak_current$coverage, accuracy=.1)` and its SE ratio is
+  `r fmt(weak_current$mean_se_ratio, 2)`. The one-line algebra fix gives
+  `r percent(weak_fixed$coverage, accuracy=.1)` coverage and an SE ratio of
+  `r fmt(weak_fixed$mean_se_ratio, 2)`.
+
+Two additional differences from Fuller (1987) were confirmed. The corrected VH
+primary estimator uses
+the finite-moment modified estimator as its preliminary estimator, and it uses
+the modified final predictor matrix in the variance bread. Fuller uses the
+ordinary corrected moment estimator for the preliminary weights and the fully
+subtracted weighted matrix for the variance bread. These are asymptotically
+equivalent substitutions, not errors of the same kind as the recycled outcome
+variance. In the simulations they act as strong finite-sample regularizers. A
+wholesale switch to the book variance bread brings equal-cell coverage close to
+95%, but produces a small number of enormous SEs when the fully corrected bread
+approaches singularity. That version should therefore be studied as an explicit
+alternative, not installed as an unexamined replacement. Accordingly, Studies
+1--4 now retain a nested three-method Fuller sequence: corrected/stabilized,
+book preliminary with stabilized bread, and the book preliminary plus book
+bread. This sequence isolates which stabilization controls the SE tail.
+
+# Audit standard and sources
+
+The governing primary source is William A. Fuller, *Measurement Error Models*
+(1987), especially:
+
+- Section 2.5, pp. 163--175, on finite-moment modified estimators;
+- Section 3.1.1, pp. 186--193, on unequal measurement-error variances;
+- Section 3.1.2, pp. 193--195, Equations 3.1.19--3.1.28, on a regression with
+  measurement error in both the outcome and predictors.
+
+The audit was checked against a local research copy of Fuller (1987), which is
+not versioned with this repository. The project's earlier derivation in
+`documentation/BLUP_Project.pdf`, Equations 55--69, is likewise a local project
+document rather than a PR artifact. The audit therefore evaluates the code
+against both the primary source and the project's stated estimator without
+placing either PDF in version control.
+
+This report concerns algebra and finite-sample behavior conditional on supplied
+measurement-error covariance matrices. Whether estimated Stage-1 covariance
+matrices require additional uncertainty propagation is a separate question.
+
+# Mathematical derivation
+
+## Measurement-error model
+
+For cluster $i=1,\ldots,M$, let the observed outcome and predictor vector be
+
+\[
+Y_i = y_i + w_i, \qquad
+\mathbf X_i = \mathbf x_i + \mathbf u_i,
+\]
+
+with structural relation
+
+\[
+y_i = \mathbf x_i^\top\boldsymbol\beta + q_i.
+\]
+
+The predictor vector includes the Stage-2 intercept. Its corresponding
+measurement-error row and column are zero. Define
+
+\[
+\mathbf Z_i=(Y_i,\mathbf X_i^\top)
+\]
+
+and the supplied measurement-error covariance
+
+\[
+\boldsymbol\Sigma_{aa,i}=
+\begin{bmatrix}
+\sigma_{ww,i} & \boldsymbol\Sigma_{wu,i}\\
+\boldsymbol\Sigma_{uw,i} & \boldsymbol\Sigma_{uu,i}
+\end{bmatrix}.
+\]
+
+For VH Studies 1 and 3, outcome and predictor scores come from separate
+first-stage models, so
+$\boldsymbol\Sigma_{uw,i}=\mathbf 0$. This does **not** imply that
+$\sigma_{ww,i}=0$.
+
+## Fuller's preliminary estimator
+
+Fuller's Equation 3.1.19 is the corrected method-of-moments estimator
+
+\[
+\widetilde{\boldsymbol\beta}
+=
+\widehat{\mathbf M}_{xx}^{-1}\widehat{\mathbf M}_{xy},
+\]
+
+where
+
+\[
+\widehat{\mathbf M}_{xx}
+=\frac{1}{M}\sum_i
+\left(\mathbf X_i\mathbf X_i^\top-
+\boldsymbol\Sigma_{uu,i}\right),
+\]
+
+and
+
+\[
+\widehat{\mathbf M}_{xy}
+=\frac{1}{M}\sum_i
+\left(\mathbf X_iY_i-\boldsymbol\Sigma_{uw,i}\right).
+\]
+
+The outcome-error variance $\sigma_{ww,i}$ does not appear in
+$\widehat{\mathbf M}_{xy}$. Outcome measurement error increases uncertainty
+but does not bias the predictor--outcome cross moment when it is independent of
+predictor measurement error.
+
+The former production code instead computed, in simplified notation,
+
+\[
+\mathbf d_{0,\text{code}}
+=\sum_i \mathbf X_iY_i
+-c_1\left(\sum_i\sigma_{ww,i}\right)\mathbf 1_P,
+\]
+
+where $c_1$ is a lambda/alpha correction and $\mathbf 1_P$ results from
+scalar recycling. Even when
+$\boldsymbol\Sigma_{uw,i}=\mathbf0$, this inserts a nonzero correction into
+the intercept and every predictor cross moment.
+
+## Residual variance and weights
+
+Using a preliminary estimate, Fuller estimates the structural residual
+variance as
+
+\[
+\widehat\sigma_q^2=
+\max\left\{0,
+\frac{1}{M-P}\sum_i
+(Y_i-\mathbf X_i^\top\widetilde{\boldsymbol\beta})^2
+-\frac{1}{M}\sum_i
+\begin{bmatrix}1\\-\widetilde{\boldsymbol\beta}\end{bmatrix}^{\!\top}
+\boldsymbol\Sigma_{aa,i}
+\begin{bmatrix}1\\-\widetilde{\boldsymbol\beta}\end{bmatrix}
+\right\}.
+\]
+
+The case weight is
+
+\[
+\widehat v_i=\widehat\sigma_q^2+\sigma_{ww,i}
+-2\widetilde{\boldsymbol\beta}^{\top}\boldsymbol\Sigma_{uw,i}
++\widetilde{\boldsymbol\beta}^{\top}
+\boldsymbol\Sigma_{uu,i}\widetilde{\boldsymbol\beta}.
+\]
+
+Consequently, an erroneous preliminary estimate propagates into
+$\widehat\sigma_q^2$, every weight, and the model-based SE. With constant
+measurement-error covariance, all weights can remain equal; the final
+coefficient may then be unchanged even while its SE is badly distorted.
+
+## Modified final estimator
+
+Fuller's Equation 3.1.20 modifies the fully corrected estimator to avoid the
+undefined or extremely heavy moments of an unprotected ratio estimator. Let
+$\widehat\lambda$ be the smallest root of
+
+\[
+\left|\sum_i
+(\mathbf Z_i^\top\mathbf Z_i-\lambda
+\boldsymbol\Sigma_{aa,i})\right|=0.
+\]
+
+The final corrected matrix subtracts $c\boldsymbol\Sigma_{aa,i}$, where
+
+\[
+c=\begin{cases}
+1-\alpha/M,&\widehat\lambda>1+M^{-1},\\
+\widehat\lambda-M^{-1}-\alpha/M,
+&\widehat\lambda\leq1+M^{-1}.
+\end{cases}
+\]
+
+The corrected implementation retains this final modification, including its weighted
+analogue. The choice $\alpha=P+1$ is a finite-sample tuning choice consistent
+with using a positive stabilizer, but it is not uniquely dictated by Equation
+3.1.20. Section 2.5 motivates lower bounds and alternative choices under more
+specific normal/Wishart assumptions.
+
+## Variance formula
+
+For the weighted estimator, Fuller's Equations 3.1.27--3.1.28 use
+
+\[
+\widehat{\mathbf M}_{xxx}
+=\frac1M\sum_i\widehat v_i^{-1}
+(\mathbf X_i\mathbf X_i^\top-\boldsymbol\Sigma_{uu,i})
+\]
+
+as the variance bread and
+
+\[
+\widetilde{\boldsymbol\Sigma}_{uw,i}
+=\boldsymbol\Sigma_{uw,i}
+-\boldsymbol\Sigma_{uu,i}\widetilde{\boldsymbol\beta}.
+\]
+
+Under normal measurement errors,
+
+\[
+\widehat{\operatorname{Var}}(\widehat{\boldsymbol\beta})
+=M^{-2}\widehat{\mathbf M}_{xxx}^{-1}
+\left[\sum_i\left\{
+\widehat v_i^{-1}\mathbf X_i\mathbf X_i^\top
++\widehat v_i^{-2}
+\widetilde{\boldsymbol\Sigma}_{uw,i}
+\widetilde{\boldsymbol\Sigma}_{uw,i}^{\top}
+\right\}\right]
+\widehat{\mathbf M}_{xxx}^{-1}.
+\]
+
+The corrected implementation constructs the meat using the supplied
+$\boldsymbol\Sigma_{uw,i}$ (zero in VH Studies 1--4), but its primary variant
+uses the modified final
+$\mathbf S_x^*/M$ as the bread. Because that matrix subtracts less error
+variance in difficult samples, it acts as a regularizer. It is asymptotically
+equivalent to Fuller's bread when $c\rightarrow1$, but it is not Equation
+3.1.28 in finite samples.
+
+# Line-by-line algebra disposition
+
+```{r algebra-disposition}
+tibble::tribble(
+  ~Component, ~Fuller_1987, ~Production_implementation, ~Disposition,
+  "Measurement-error block",
+  "Outcome variance, predictor covariance, and their cross covariance are distinct",
+  "Stores all three blocks; omitted cross-covariance columns become exact zeros",
+  "Correct and general; VH explicitly supplies zeros",
+  "Preliminary X'Y moment",
+  "Subtract sum of predictor-outcome error covariances",
+  "Subtracts the supplied predictor-outcome covariance; never substitutes outcome variance",
+  "Corrected; former code had a definite algebra error",
+  "Preliminary X'X moment",
+  "Subtract full predictor-error covariance",
+  "Subtracts a lambda/alpha-modified predictor covariance",
+  "Undocumented asymptotically equivalent stabilization",
+  "Residual variance",
+  "Residual mean square minus composite measurement variance; truncate at zero",
+  "Same formula with the selected corrected preliminary estimate",
+  "Correct",
+  "Final point estimator",
+  "Weighted lambda/alpha-modified corrected moment estimator",
+  "Same block construction and correction",
+  "Correct",
+  "Variance meat",
+  "Weighted X'X plus the squared tilde-covariance term",
+  "Uses omega_xy - Omega_x beta for supplied or zero cross covariance",
+  "Corrected and general",
+  "Variance bread",
+  "Fully measurement-error-subtracted weighted predictor moment",
+  "Lambda/alpha-modified final predictor moment",
+  "Undocumented asymptotically equivalent stabilization",
+  "Uncertainty in supplied error covariance",
+  "Known covariance in Section 3.1.2; estimated covariance treated under additional conditions elsewhere",
+  "Treats fitted Stage-1 covariance as supplied",
+  "Separate inferential issue, not this algebra error"
+) %>%
+  kable(
+    col.names = c(
+      "Component", "Fuller (1987)", "Corrected production", "Audit conclusion"
+    ),
+    caption = "Disposition of each material Fuller calculation."
+  )
+```
+
+# Independent implementation check
+
+The audit implementation was written independently in
+`fuller_algebra_audit_simulation.R`. Its corrected/stabilized branch was then
+compared with `fit_fuller_dual()` over 100 newly generated datasets containing
+regular and ill-conditioned covariance shapes and constant or heterogeneous
+measurement-error variances.
+
+```{r validation-table}
+validation %>%
+  summarise(
+    Replications = n(),
+    `Max |estimate difference|` = max(abs(estimate_difference), na.rm = TRUE),
+    `Max |SE difference|` = max(abs(se_difference), na.rm = TRUE),
+    `Max |lambda1 difference|` = max(abs(lambda1_difference), na.rm = TRUE),
+    `Max |lambda2 difference|` = max(abs(lambda2_difference), na.rm = TRUE),
+    `Max |sigma2 difference|` = max(abs(sigma2_difference), na.rm = TRUE)
+  ) %>%
+  mutate(across(where(is.numeric) & !matches("Replications"), scientific)) %>%
+  kable(caption = "Independent audit code versus the production implementation.")
+```
+
+The maximum estimate discrepancy is
+`r scientific(max(abs(validation$estimate_difference)))`, and the maximum SE
+discrepancy is `r scientific(max(abs(validation$se_difference)))`. The audit
+therefore reproduces corrected production to numerical precision.
+
+The regression tests also exercise a positive, nonzero
+$\boldsymbol\Sigma_{uw,i}$ in both the dual-predictor and single-predictor
+paths. Production agrees with the independent implementation for the final
+coefficient, structural variance, both generalized-eigen roots, and SE. Thus
+zero is a VH design assumption supplied to a general covariance implementation,
+not a hard-coded limitation of the estimator.
+
+# Focused simulation
+
+## Design
+
+The simulation is deliberately a direct additive measurement-error model. It
+does not fit a mixed model first; doing so would confound the algebra check with
+Stage-1 estimation. The supplied error covariance matrices are the true
+matrices, matching Fuller's known-covariance setup.
+
+Each cell has 1,000 replications and either 50 or 200 Stage-2 units. The true
+standardized focal coefficient is .40. The two true predictor covariance shapes
+are:
+
+- regular: $\tau_1^2/\tau_0^2=1$, $\rho=.50$,
+  $\kappa(G)=3$;
+- ill-conditioned: $\tau_1^2/\tau_0^2=.005$, $\rho=.50$,
+  $\kappa(G)=267.3$.
+
+Predictor error, when present, corresponds marginally to reliability .80 for
+the intercept-like predictor and .25 for the slope-like predictor. Outcome
+error has variance one. Heterogeneous cells use known case-specific variance
+multipliers $(.2,1,1.8)$. Predictor and outcome measurement errors are
+independent, as in the VH separate-process construction.
+
+Four nested estimators isolate the code differences. The first is retained only
+as a historical bug comparator; the remaining three are now implemented as the
+VH Fuller method sequence:
+
+1. **Former production (bug)** reproduces the pre-correction scalar recycling.
+2. **Corrected VH (stabilized)** uses the correct cross covariance while
+   retaining both finite-sample stabilizations; this is the primary method
+   `fuller_closed_form`.
+3. **Corrected + Fuller preliminary** also uses Equation 3.1.19 for the
+   preliminary estimator while retaining the stabilized variance bread; this
+   is `fuller_book_preliminary_closed_form`.
+4. **Corrected + Fuller equations** additionally uses the Equation 3.1.28
+   variance bread; this is `fuller_book_closed_form`.
+
+All `r nrow(performance)` condition-by-estimator summaries have 100% numerical
+eligibility. Thus coverage differences are not generated by excluding failed
+fits.
+
+## The flagged cross-moment error
+
+```{r focal-outcome-table}
+outcome_focal %>%
+  transmute(
+    Geometry = unname(geometry_labels[geometry]),
+    Version = unname(variant_labels[variant]),
+    `Mean preliminary slope` = round(mean_gamma0, 3),
+    `Mean structural variance` = round(mean_sigma2, 3),
+    `Mean SE / empirical SD` = round(mean_se_ratio, 3),
+    Coverage = percent(coverage, accuracy = .1),
+    Bias = round(bias, 3)
+  ) %>%
+  kable(
+    caption = paste(
+      "Outcome-error-only diagnostic with 200 clusters. The true standardized",
+      "preliminary/focal slope is .40."
+    )
+  )
+```
+
+The final point estimates remain centered in this homoskedastic diagnostic
+because all case weights are equal and their common scale cancels from the
+final estimating equation. The preliminary estimate and estimated uncertainty
+do not enjoy that cancellation. Under regular geometry, the production
+preliminary slope averages `r fmt(regular_current$mean_gamma0)` rather than .40;
+under the weak shape it averages `r fmt(weak_current$mean_gamma0, 2)`. These
+values inflate the estimated structural variance from approximately
+`r fmt(weak_fixed$mean_sigma2)` to `r fmt(weak_current$mean_sigma2, 1)` in the
+weak-shape cell.
+
+With heterogeneous outcome-error variances, weights no longer share a common
+scale. The erroneous preliminary estimate can then also change the final point
+estimate and empirical sampling variance. This is why the issue cannot be
+dismissed merely because the homoskedastic point estimates agree.
+
+```{r coverage-plot, fig.width=11, fig.height=7.4}
+ggplot(
+  performance,
+  aes(x = scenario_label, y = coverage, colour = variant_label, group = variant_label)
+) +
+  annotate(
+    "rect", xmin = -Inf, xmax = Inf, ymin = mc_band[[1]], ymax = mc_band[[2]],
+    fill = "grey70", alpha = .25
+  ) +
+  geom_hline(yintercept = .95, linetype = 2) +
+  geom_point(position = position_dodge(width = .35), size = 2) +
+  facet_grid(geometry_label ~ m, labeller = label_both) +
+  scale_colour_manual(values = variant_palette) +
+  scale_y_continuous(labels = label_percent(), limits = c(.90, 1.005)) +
+  labs(
+    x = NULL,
+    y = "95% Wald coverage",
+    colour = NULL,
+    title = "Coverage after isolating each Fuller algebra choice",
+    subtitle = "Grey band is the exact 95% Monte Carlo range for 1,000 replications"
+  ) +
+  theme_audit() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+## Point bias
+
+```{r bias-plot, fig.width=11, fig.height=7.4}
+ggplot(
+  performance,
+  aes(x = scenario_label, y = bias, colour = variant_label, group = variant_label)
+) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_point(position = position_dodge(width = .35), size = 2) +
+  facet_grid(geometry_label ~ m, labeller = label_both) +
+  scale_colour_manual(values = variant_palette) +
+  labs(
+    x = NULL,
+    y = "Mean bias on standardized scale",
+    colour = NULL,
+    title = "The cross-moment bug primarily distorts uncertainty",
+    subtitle = "Point-estimate differences emerge when case-specific error variances change the weights"
+  ) +
+  theme_audit() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+At (M=50), the modified final Fuller estimator still has appreciable
+finite-sample point bias in predictor-error cells. All four versions share that
+final point estimator, so the algebra fix cannot remove that separate ratio/
+weak-information problem. This reinforces the Study-5 conclusion that DGM
+geometry and interval algebra are distinct sources of coverage error.
+
+## SE calibration and right tails
+
+```{r median-se-ratio-plot, fig.width=11, fig.height=7.4}
+ggplot(
+  performance,
+  aes(
+    x = scenario_label, y = median_se_ratio,
+    colour = variant_label, group = variant_label
+  )
+) +
+  geom_hline(yintercept = 1, linetype = 2) +
+  geom_point(position = position_dodge(width = .35), size = 2) +
+  facet_grid(geometry_label ~ m, labeller = label_both) +
+  scale_colour_manual(values = variant_palette) +
+  scale_y_log10(breaks = c(.5, .75, 1, 1.5, 2, 5, 10, 25)) +
+  labs(
+    x = NULL,
+    y = "Median model SE / empirical SD (log scale)",
+    colour = NULL,
+    title = "Typical SE calibration",
+    subtitle = "Median SE is shown because book-faithful corrected breads can have extreme right tails"
+  ) +
+  theme_audit() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+The cross-moment fix removes the dramatic SE inflation in all outcome-error
+cells. Using Fuller's unmodified preliminary estimator has little effect on a
+typical SE, but creates additional tail variability when predictor information
+is weak. The book-faithful variance bread generally raises the typical SE and
+moves coverage upward.
+
+However, means tell a different tail-sensitive story:
+
+```{r predictor-tail-table}
+predictor_m200 %>%
+  transmute(
+    Version = as.character(variant_label),
+    Coverage = percent(coverage, accuracy = .1),
+    Bias = round(bias, 3),
+    `Median cell: mean SE/SD` = round(median_cell_mean_se_ratio, 2),
+    `Median cell: median SE/SD` = round(median_cell_median_se_ratio, 2),
+    `Largest cell mean SE/SD` = round(maximum_cell_mean_se_ratio, 1)
+  ) %>%
+  kable(
+    caption = paste(
+      "Equal-cell summaries over all predictor-error scenarios and both",
+      "covariance shapes at M=200."
+    )
+  )
+```
+
+The full Fuller version averages
+`r percent(predictor_m200$coverage[predictor_m200$variant == "documented_full"], accuracy=.1)`
+coverage across these predictor-error cells, close to nominal. But its largest
+cell mean-SE ratio is
+`r fmt(predictor_m200$maximum_cell_mean_se_ratio[predictor_m200$variant == "documented_full"], 1)`,
+while the median-cell median-SE ratio is only
+`r fmt(predictor_m200$median_cell_median_se_ratio[predictor_m200$variant == "documented_full"], 2)`.
+Rare near-singular fully subtracted breads therefore dominate the mean. This is
+the same distinction between typical uncertainty and SE tails that appeared in
+VH Study 5.
+
+Fuller explicitly developed the modified estimator because ordinary corrected
+ratio estimators can lack finite moments in small samples (Section 2.5). Using
+the fully subtracted matrix in the variance bread reintroduces an analogous
+operational instability even though it follows Equation 3.1.28. Nominal average
+coverage does not by itself make those intervals satisfactory.
+
+# Implications for VH Studies 1--4
+
+```{r study-implication-table}
+tibble::tribble(
+  ~Study, ~Outcome_error_in_Fuller, ~Predictor_error_in_Fuller, ~Consequence,
+  "Study 1: random effect as outcome", "Yes", "No",
+  "Directly affected. Point estimates may be unchanged in balanced cells, but preliminary coefficients, residual variance, weights, and SEs must be recomputed.",
+  "Study 2: random effect as predictor", "No", "Yes",
+  "Not affected by the recycled outcome variance. Legacy non-null undercoverage remains a covariance-geometry/point-bias problem.",
+  "Study 3: random effects on both sides", "Yes", "Yes",
+  "Directly affected and highest priority for rerunning because the bad preliminary estimate enters both outcome- and predictor-error weighting.",
+  "Study 4: heterogeneous predictor information", "No", "Yes",
+  "Not affected by the recycled outcome variance. Heterogeneity and corrected-bread instability remain relevant."
+) %>%
+  kable(
+    col.names = c(
+      "Study", "Outcome score error?", "Predictor score error?", "Audit implication"
+    ),
+    caption = "Which historical studies are affected by the confirmed algebra error."
+  )
+```
+
+The existing Fuller average coverages---about 96.2% in Study 1, 90.5% in
+Study 2, 97.3% in Study 3, and 92.8% in Study 4---should therefore not receive a
+single explanation. The confirmed algebra error likely contributes to the
+overcoverage in Studies 1 and 3. It cannot produce the undercoverage in Studies
+2 and 4 because the offending term is identically zero there.
+
+The corrected pipeline will generally narrow Study-1 and Study-3 intervals. It
+could bring their conservative coverage closer to nominal, but the direction
+and magnitude must be established by rerunning those studies. In Study 3 it can
+also alter point estimates when outcome and predictor measurement precision
+varies across clusters. Studies 2 and 4 must also be rerun because the pipeline
+version and comparison-method set changed, even though their primary corrected
+estimate is algebraically unchanged when outcome error and the cross block are
+both zero.
+
+Study 1 provides a useful invariant check: its Stage-2 predictor is observed
+without error, so both preliminary predictor corrections and both variance
+breads reduce to the same matrices. The three corrected Fuller algebra variants
+must therefore agree exactly after the outcome/cross-moment fix; the pathway
+test now enforces that equality. The variants become substantively distinct in
+Studies 2--4, where the Stage-2 predictors are error-prone.
+
+# Recommended disposition
+
+## Production correction now implemented
+
+For the VH separate-process assumption,
+$\boldsymbol\Sigma_{uw,i}=\mathbf0$, the preliminary cross moment should be
+
+```r
+b0_vec <- as.vector(crossprod(x_mat, y_vec))
+```
+
+not
+
+```r
+b0_vec <- as.vector(
+  crossprod(x_mat, y_vec) - c_correction1 * omega_y_sum
+)
+```
+
+The implementation now accepts separate covariance columns for the
+intercept-like and slope-like predictors, constructs the full covariance block,
+and propagates the covariance through the generalized eigenvalues, preliminary
+cross moment, composite residual variance, weights, final cross moment, and
+variance meat. Omitted inputs default to zero; the VH wrappers nevertheless
+pass named zero columns so the assumption is visible rather than implicit.
+
+## Stabilizations that should not be silently changed
+
+The modified preliminary estimator and modified variance bread should be
+treated as explicit, named finite-sample stabilizations:
+
+- Retaining the modified preliminary estimator is defensible. It is
+  asymptotically equivalent to Fuller's preliminary estimator and substantially
+  limits the extreme preliminary coefficients and weight tails in weak samples.
+- Retaining the modified variance bread is also operationally defensible, but
+  its intervals should not be called the unmodified Fuller (1987) variance
+  formula. The simple simulation suggests a modest tendency toward
+  undercoverage after the cross-moment fix in predictor-error cells.
+- Switching to the Equation 3.1.28 bread improves average coverage here but
+  creates extreme SE tails. It should be compared with a full cluster bootstrap
+  and a test-inversion approach before being chosen for the paper.
+
+The cleanest terminology would distinguish **modified Fuller point estimation**
+from **stabilized Fuller Wald inference**. If both preliminary and bread
+stabilizations are retained, the methods section should state them explicitly
+and the simulation must validate the resulting procedure rather than relying
+on Fuller's asymptotic label alone.
+
+## Completed safeguards and required reruns
+
+The following implementation safeguards are complete:
+
+1. The zero-covariance test verifies that positive outcome error does not enter
+   the preliminary cross moment, and a nonzero-covariance test verifies the
+   complete general implementation against independent audit code.
+2. Exact production-versus-reference tests cover the preliminary estimate,
+   structural variance, both lambdas, final coefficient, SE, and all three
+   retained algebra variants.
+3. VH Studies 1--4 explicitly add and pass zero covariance columns; output
+   diagnostics record the covariance source, maximum magnitude, preliminary
+   moment, and variance bread.
+4. The pipeline version is bumped, and the parallel-worker export list includes
+   the new common helper and variant fitter.
+
+The remaining empirical work is to:
+
+1. Rerun compact Study-1v2 and Study-3v2 bridges under the corrected code,
+   retaining paired random-number streams and both corrected/stabilized and
+   Equation-3.1.28 breads.
+2. For Studies 2v2 and 4v2, retain the fixed covariance-shape calibration. The algebra
+   fix will not repair their historical non-null bias.
+3. Compare stabilized Wald, full-pipeline cluster bootstrap, and test-inverted
+   intervals in representative $R=.25$, correlated, and heterogeneous cells.
+   Report median and mean SE, upper SE quantiles, coverage, Type I error, bias,
+   and eligibility.
+
+# Final conclusion
+
+The audit changes the interpretation of the Fuller results in an important but
+bounded way. A genuine outcome/cross-covariance substitution error inflated
+Fuller uncertainty whenever the Stage-2 outcome was a measured random effect.
+The simple simulation reproduces the mechanism and shows that the one-component
+fix can move extreme overcoverage back toward nominal performance. That fix is
+now implemented and independently tested, making corrected reruns of Studies 1
+and 3 the next mandatory empirical step.
+
+It does **not** overturn the Study-5 diagnosis of Studies 2 and 4. Their
+Stage-2 outcomes have no measurement error, so their low non-null coverage
+still arises primarily from the legacy slope-only reliability calibration,
+ill-conditioned covariance geometry, and finite-sample point-estimator bias.
+
+Finally, the audit does not support blindly replacing every stabilized matrix
+with the literal book matrix. Fuller's book-faithful variance bread improves
+average coverage in this simple design but produces severe SE tails near weak
+identification. The decisive next analysis is therefore the amended Study 1--4
+run with the corrected/stabilized Fuller estimator as primary, the two nested
+book variants as SE-tail diagnostics, and targeted resampling/test-inversion
+checks under the v2 fixed-shape DGM.
+
+# Reproducibility
+
+The simulation can be regenerated from the repository root with:
+
+```bash
+Rscript vig_hallquist_2026/analysis/fuller_algebra_audit_simulation.R \
+  1000 outputs/fuller_algebra_audit 4
+```
+
+```{r session-info}
+sessionInfo()
+```

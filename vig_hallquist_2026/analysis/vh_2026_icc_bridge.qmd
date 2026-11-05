@@ -1,0 +1,1104 @@
+---
+title: "VH ICC Bridge: Posterior Reliability Versus an ICC Anchor"
+author: "Simulation analysis"
+date: "18 August 2026"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: true
+    embed-resources: true
+    html-math-method: katex
+params:
+  output_dir: "outputs/vig_hallquist_icc_bridge"
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center",
+  dpi = 120,
+  out.width = "100%"
+)
+
+suppressPackageStartupMessages({
+  library(data.table)
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(knitr)
+  library(scales)
+})
+
+input_path <- tryCatch(knitr::current_input(dir = TRUE), error = function(e) "")
+analysis_dir <- if (nzchar(input_path)) {
+  dirname(normalizePath(input_path, mustWork = FALSE))
+} else {
+  getwd()
+}
+repo_root <- normalizePath(file.path(analysis_dir, "..", ".."), mustWork = TRUE)
+resolve_repo_path <- function(path) {
+  if (grepl("^/", path)) path else file.path(repo_root, path)
+}
+
+source(file.path(
+  repo_root,
+  "vig_hallquist_2026",
+  "random_effects_structural_simulation.R"
+), local = knitr::knit_global())
+
+output_dir <- resolve_repo_path(params$output_dir)
+condition_dir <- file.path(output_dir, "conditions")
+summary_files <- list.files(
+  condition_dir,
+  pattern = "^condition_[0-9]+_summary[.]csv$",
+  full.names = TRUE
+)
+if (length(summary_files) == 0L) {
+  stop("No ICC-bridge condition summaries found in: ", condition_dir)
+}
+
+cell_metrics <- data.table::rbindlist(
+  lapply(summary_files, data.table::fread),
+  fill = TRUE,
+  use.names = TRUE
+) %>%
+  tibble::as_tibble()
+
+expected_design <- select_design("iccbridge")
+completed_ids <- sort(unique(cell_metrics$condition_id))
+missing_ids <- setdiff(expected_design$condition_id, completed_ids)
+unexpected_ids <- setdiff(completed_ids, expected_design$condition_id)
+expected_method_cells <- tidyr::crossing(
+  condition_id = expected_design$condition_id,
+  method = study2_methods()
+)
+observed_method_cells <- cell_metrics %>%
+  count(.data$condition_id, .data$method, name = "summary_rows")
+missing_method_cells <- dplyr::anti_join(
+  expected_method_cells,
+  observed_method_cells,
+  by = c("condition_id", "method")
+)
+unexpected_method_cells <- dplyr::anti_join(
+  observed_method_cells,
+  expected_method_cells,
+  by = c("condition_id", "method")
+)
+if (
+  length(missing_ids) > 0L ||
+  length(unexpected_ids) > 0L ||
+  nrow(missing_method_cells) > 0L ||
+  nrow(unexpected_method_cells) > 0L ||
+  any(observed_method_cells$summary_rows != 1L) ||
+  any(cell_metrics$n_rep != 1000L)
+) {
+  stop(
+    "ICC-bridge output is incomplete or internally inconsistent: ",
+    length(missing_ids), " missing condition IDs; ",
+    length(unexpected_ids), " unexpected condition IDs; ",
+    nrow(missing_method_cells), " missing condition-method cells; ",
+    nrow(unexpected_method_cells), " unexpected condition-method cells; ",
+    sum(observed_method_cells$summary_rows != 1L),
+    " duplicated condition-method cells; n_rep range ",
+    paste(range(cell_metrics$n_rep), collapse = "--")
+  )
+}
+
+arm_labels <- c(
+  posterior_reliability_targeted = "Posterior slope reliability held fixed",
+  icc_anchored_at_m10 = "ICC anchored at m = 10"
+)
+method_labels <- c(
+  oracle_dual = "Oracle dual",
+  naive_dual_blup = "Naive dual BLUP",
+  closed_form_dual = "Uncorrected closed-form OLS",
+  fuller_closed_form = "Fuller (stabilized)",
+  fuller_book_preliminary_closed_form = "Fuller (book preliminary)",
+  fuller_book_closed_form = "Fuller (book equations)",
+  fuller_alpha_stepdown_closed_form = "Fuller (alpha-stepdown)",
+  lai_2spa = "Lai 2S-PA",
+  msem = "MSEM"
+)
+focal_methods <- c("oracle_dual", "fuller_closed_form", "lai_2spa", "msem")
+feasible_methods <- c("fuller_closed_form", "lai_2spa", "msem")
+
+cell_metrics <- cell_metrics %>%
+  mutate(
+    arm_label = factor(
+      unname(arm_labels[calibration_arm]),
+      levels = unname(arm_labels)
+    ),
+    method_label = factor(
+      unname(method_labels[method]),
+      levels = unname(method_labels)
+    ),
+    m_label = factor(
+      paste0("m = ", mean_clus_size),
+      levels = paste0("m = ", c(3, 10, 25))
+    ),
+    rho_label = factor(
+      paste0("rho = ", marginal_rho),
+      levels = paste0("rho = ", c(-0.5, 0, 0.5))
+    ),
+    target_label = factor(
+      paste0("Target R = ", posterior_reliability_anchor),
+      levels = paste0("Target R = ", c(0.25, 0.5, 0.8))
+    ),
+    effect_label = factor(
+      paste0("beta = ", standardized_beta_target),
+      levels = paste0("beta = ", c(0, 0.4))
+    )
+  )
+
+focal <- cell_metrics %>% filter(method %in% focal_methods)
+
+manipulation <- cell_metrics %>%
+  distinct(
+    calibration_arm, arm_label, mean_clus_size, m_label,
+    marginal_rho, rho_label, posterior_reliability_anchor, target_label,
+    achieved_reliability, achieved_partial_reliability,
+    intercept_icc, marginal_slope_icc, conditional_slope_icc, sigma
+  )
+
+arm_effect_summary <- focal %>%
+  group_by(arm_label, method_label, standardized_beta_target) %>%
+  summarise(
+    cells = n(),
+    eligibility = mean(.data$interval_eligibility, na.rm = TRUE),
+    mean_coverage = mean(.data$coverage, na.rm = TRUE),
+    minimum_coverage = min(.data$coverage, na.rm = TRUE),
+    maximum_coverage = max(.data$coverage, na.rm = TRUE),
+    mean_bias = mean(.data$bias, na.rm = TRUE),
+    mean_absolute_bias = mean(abs(.data$bias), na.rm = TRUE),
+    bias_mc_se = sqrt(sum(.data$mc_se_bias^2, na.rm = TRUE)) / n(),
+    mean_model_se = mean(.data$mean_se, na.rm = TRUE),
+    median_se_to_sd = median(
+      .data$mean_se_to_interval_empirical_sd,
+      na.rm = TRUE
+    ),
+    success_and_cover = mean(.data$success_and_cover, na.rm = TRUE),
+    type1_error = if (first(.data$standardized_beta_target) == 0) {
+      mean(.data$type1_error, na.rm = TRUE)
+    } else {
+      NA_real_
+    },
+    operational_type1 = if (first(.data$standardized_beta_target) == 0) {
+      mean(.data$operational_type1_error, na.rm = TRUE)
+    } else {
+      NA_real_
+    },
+    .groups = "drop"
+  ) %>%
+  mutate(
+    bias_mc_low = mean_bias - qnorm(.975) * bias_mc_se,
+    bias_mc_high = mean_bias + qnorm(.975) * bias_mc_se
+  )
+
+arm_m_summary <- focal %>%
+  group_by(arm_label, mean_clus_size, method_label) %>%
+  summarise(
+    cells = n(),
+    eligibility = mean(.data$interval_eligibility, na.rm = TRUE),
+    mean_coverage = mean(.data$coverage, na.rm = TRUE),
+    mean_bias = mean(.data$bias, na.rm = TRUE),
+    mean_absolute_bias = mean(abs(.data$bias), na.rm = TRUE),
+    mean_model_se = mean(.data$mean_se, na.rm = TRUE),
+    median_se_to_sd = median(
+      .data$mean_se_to_interval_empirical_sd,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  )
+
+null_summary <- focal %>%
+  filter(standardized_beta_target == 0) %>%
+  group_by(arm_label, mean_clus_size, method_label) %>%
+  summarise(
+    cells = n(),
+    eligibility = mean(.data$interval_eligibility, na.rm = TRUE),
+    mean_null_bias = mean(.data$bias, na.rm = TRUE),
+    conditional_type1 = mean(.data$type1_error, na.rm = TRUE),
+    operational_type1 = mean(.data$operational_type1_error, na.rm = TRUE),
+    positive_rejection = mean(.data$type1_error_positive, na.rm = TRUE),
+    negative_rejection = mean(.data$type1_error_negative, na.rm = TRUE),
+    minimum_type1 = min(.data$type1_error, na.rm = TRUE),
+    maximum_type1 = max(.data$type1_error, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+pair_metrics <- cell_metrics %>%
+  dplyr::select(
+    bridge_pair_id, mean_clus_size, marginal_rho,
+    posterior_reliability_anchor, standardized_beta_target,
+    method, method_label, calibration_arm,
+    coverage, bias, mean_se, interval_eligibility, type1_error
+  ) %>%
+  pivot_wider(
+    names_from = calibration_arm,
+    values_from = c(
+      coverage, bias, mean_se, interval_eligibility, type1_error
+    ),
+    names_sep = "__"
+  ) %>%
+  mutate(
+    coverage_difference =
+      coverage__posterior_reliability_targeted -
+      coverage__icc_anchored_at_m10,
+    bias_difference =
+      bias__posterior_reliability_targeted -
+      bias__icc_anchored_at_m10,
+    se_difference =
+      mean_se__posterior_reliability_targeted -
+      mean_se__icc_anchored_at_m10,
+    eligibility_difference =
+      interval_eligibility__posterior_reliability_targeted -
+      interval_eligibility__icc_anchored_at_m10
+  )
+
+paired_summary <- pair_metrics %>%
+  filter(method %in% focal_methods) %>%
+  group_by(mean_clus_size, method_label) %>%
+  summarise(
+    paired_cells = n(),
+    mean_coverage_difference = mean(coverage_difference, na.rm = TRUE),
+    mean_se_difference = mean(se_difference, na.rm = TRUE),
+    mean_eligibility_difference = mean(eligibility_difference, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+anchor_metrics <- pair_metrics %>% filter(mean_clus_size == 10)
+anchor_max_difference <- max(abs(c(
+  anchor_metrics$coverage_difference,
+  anchor_metrics$bias_difference,
+  anchor_metrics$se_difference,
+  anchor_metrics$eligibility_difference
+)), na.rm = TRUE)
+
+type1_identity_error <- focal %>%
+  filter(standardized_beta_target == 0) %>%
+  summarise(maximum = max(abs(type1_error - (1 - coverage)), na.rm = TRUE)) %>%
+  pull(maximum)
+
+metric_mean <- function(
+    arm, method, effect, variable, mean_cluster_size = NULL,
+    reliability_anchor = NULL) {
+  selected <- focal %>%
+    filter(
+      .data$calibration_arm == .env$arm,
+      .data$method == .env$method,
+      .data$standardized_beta_target == .env$effect
+    )
+  if (!is.null(mean_cluster_size)) {
+    selected <- selected %>%
+      filter(.data$mean_clus_size == .env$mean_cluster_size)
+  }
+  if (!is.null(reliability_anchor)) {
+    selected <- selected %>%
+      filter(
+        .data$posterior_reliability_anchor == .env$reliability_anchor
+      )
+  }
+  mean(selected[[variable]], na.rm = TRUE)
+}
+
+paired_mean <- function(mean_cluster_size, method, variable) {
+  selected <- pair_metrics %>%
+    filter(
+      .data$mean_clus_size == .env$mean_cluster_size,
+      .data$method == .env$method
+    )
+  mean(selected[[variable]], na.rm = TRUE)
+}
+
+fmt_pct <- function(x, accuracy = 0.1) percent(x, accuracy = accuracy)
+fmt_pp <- function(x, digits = 1) sprintf(paste0("%+.", digits, "f pp"), 100 * x)
+fmt_num <- function(x, digits = 3) formatC(x, digits = digits, format = "f")
+
+arm_palette <- c(
+  "Posterior slope reliability held fixed" = "#4E79A7",
+  "ICC anchored at m = 10" = "#E15759"
+)
+method_palette <- c(
+  "Oracle dual" = "#4D4D4D",
+  "Fuller (stabilized)" = "#4E79A7",
+  "Lai 2S-PA" = "#B07AA1",
+  "MSEM" = "#59A14F"
+)
+
+theme_bridge <- function() {
+  theme_bw(base_size = 10) +
+    theme(
+      panel.grid.minor = element_blank(),
+      legend.position = "bottom",
+      strip.background = element_rect(fill = "grey95", colour = "grey75")
+    )
+}
+```
+
+# Executive summary
+
+The ICC bridge strengthens the design conclusion from VH Study 5: preserve the
+random-effects covariance shape and use posterior slope reliability as the
+primary information manipulation. The reason is not that ICC is uninformative.
+With the covariance shape fixed and the observation schedule specified, ICC
+and posterior reliability are monotone summaries of the same signal-to-noise
+system. The problem is that a fixed ICC does **not** hold the precision of an
+individual slope estimate constant when the number and placement of repeated
+observations change.
+
+This bridge makes that distinction unusually clean. The two calibration arms
+are identical at the reference cluster size, $m=10$, and use common random
+numbers. Their condition-level coverage, bias, mean SE, and eligibility
+summaries agree to a maximum absolute difference of
+`r format(anchor_max_difference, scientific = TRUE)`. Away from that anchor,
+the posterior-reliability arm recalibrates the level-1 residual scale to keep
+slope reliability at .25, .50, or .80. The ICC arm holds the $m=10$ ICC
+anchor fixed. Consequently, its achieved posterior slope reliability is only
+about .07--.50 at $m=3$, but about .46--.91 at $m=25$.
+
+That information drift has material inferential consequences. Averaging across
+both effect conditions, correlations, and reliability anchors, posterior
+targeting improves coverage at $m=3$, relative to ICC anchoring, by
+`r fmt_pp(paired_mean(3, "fuller_closed_form", "coverage_difference"))` for
+Fuller, `r fmt_pp(paired_mean(3, "lai_2spa", "coverage_difference"))` for
+2S-PA, and `r fmt_pp(paired_mean(3, "msem", "coverage_difference"))` for
+MSEM. The oracle difference is exactly zero because the oracle does not depend
+on the noisy Stage-1 measurements. At $m=25$, where the ICC arm gives **more**
+posterior information than its $m=10$ anchor, differences are much smaller
+and are not uniformly favorable to posterior targeting. This is the intended
+result: the bridge shows that holding ICC fixed changes the effective slope
+information as $m$ changes, not that one calibration must improve every
+estimator in every cell.
+
+The estimator conclusions remain qualified. Fuller is always eligible and has
+the smallest feasible-method bias, but its null intervals remain conservative.
+2S-PA is also conservative at the null and its coverage is conditional on a
+selected set of successful fits. MSEM has Type I error closest to 5%, but it
+retains positive non-null bias and some low-reliability undercoverage. Thus the
+bridge supports posterior reliability as the **design factor**; it does not
+establish that any one feasible interval procedure is uniformly calibrated.
+
+# Relation to the Study 5 argument
+
+VH Study 5 separated two issues that had been confounded in the original
+Studies 1--4:
+
+1. attaining low reliability by shrinking only the random-slope variance,
+   $\tau_1^2$, can create an irregular covariance geometry; and
+2. even after fixing that geometry, marginal slope reliability, residualized
+   slope reliability, and ICC are different descriptions of information.
+
+Study 5 decisively rejected the one-coordinate `solve-G_22` calibration (the
+old code name for solving only for $\tau_1^2$). It recommended a shared
+shape-preserving DGM, marginal posterior slope reliability as the primary
+factor, and residualized-slope reliability as a required diagnostic and
+sensitivity factor. The present bridge addresses the remaining reviewer-facing
+question: once covariance geometry is regular, could an ICC manipulation give
+an equally coherent account of the design?
+
+The answer is nuanced. At a fixed measurement design, either ICC or posterior
+reliability can index the signal-to-noise balance. Across different cluster
+sizes, posterior reliability is more proximal to the Stage-1 quantity used by
+Fuller, 2S-PA, and MSEM because it incorporates the full random-effects
+covariance, residual variance, and time-design matrix. A single ICC omits part
+of that design dependence.
+
+The ICC arm here specifically holds the **intercept ICC** implied by the
+$m=10$ posterior-reliability solution. Because
+$\tau_1^2/\tau_0^2=1$ and the intercept--slope correlation are fixed, this is
+a coherent scalar signal-to-noise anchor. It should not be confused with the
+conditional slope ICC, which is recorded as a manipulation check but is not
+the calibration target. This terminology matters when comparing the bridge
+with Lai-style conditional-ICC designs.
+
+# Design, completeness, and estimands
+
+The 108 conditions cross:
+
+- two calibration arms;
+- $m=3,10,25$ observations per cluster;
+- posterior-reliability anchors .25, .50, and .80;
+- random intercept--slope correlations $\rho=-.5,0,.5$; and
+- standardized focal effects $\beta=0$ and $.4$.
+
+Every condition has 100 clusters and 1,000 Monte Carlo replications. The
+random-effects covariance shape is fixed at
+$\tau_1^2/\tau_0^2=1$; calibration changes the level-1 residual scale.
+
+```{r completion-check}
+
+tibble(
+  Check = c(
+    "Expected design conditions",
+    "Completed condition summaries",
+    "Missing expected condition IDs",
+    "Unexpected condition IDs",
+    "Missing condition-method summaries",
+    "Unexpected condition-method summaries",
+    "Methods per condition",
+    "Minimum replications per condition-method",
+    "Maximum replications per condition-method"
+  ),
+  Result = c(
+    nrow(expected_design),
+    n_distinct(cell_metrics$condition_id),
+    length(missing_ids),
+    length(unexpected_ids),
+    nrow(missing_method_cells),
+    nrow(unexpected_method_cells),
+    n_distinct(cell_metrics$method),
+    min(cell_metrics$n_rep),
+    max(cell_metrics$n_rep)
+  )
+) %>%
+  kable(caption = "Production-output completeness checks.")
+```
+
+All performance statistics are condition-level summaries computed from the
+replication outputs. Point-estimate summaries require point eligibility.
+Coverage and SE summaries require interval eligibility. Coverage is therefore
+conditional on obtaining an eligible interval; `success_and_cover` additionally
+counts ineligible replications as unsuccessful. Bias Monte Carlo intervals use
+the empirical sampling SD divided by the square root of the eligible count.
+
+For the null conditions, Type I error uses the same eligible-fit denominator
+and the same confidence-interval inversion rule as coverage. Therefore,
+
+\[
+\widehat\alpha = 1-\widehat C
+\]
+
+cell by cell. The largest observed numerical deviation from that identity is
+`r format(type1_identity_error, scientific = TRUE)`. Type I error and null
+coverage are shown on the Type I scale because that is the decision-relevant
+interpretation; plotting both would duplicate the same statistic.
+
+# Manipulation checks: what ICC fails to hold constant
+
+```{r reliability-manipulation-plot, fig.width=11, fig.height=7.5}
+
+manipulation %>%
+  ggplot(aes(
+    x = mean_clus_size,
+    y = achieved_reliability,
+    colour = arm_label,
+    shape = arm_label,
+    group = arm_label
+  )) +
+  geom_hline(
+    aes(yintercept = posterior_reliability_anchor),
+    linetype = 2,
+    colour = "grey45"
+  ) +
+  geom_line(linewidth = .55) +
+  geom_point(size = 2.1) +
+  facet_grid(rho_label ~ target_label) +
+  scale_x_continuous(breaks = c(3, 10, 25)) +
+  scale_y_continuous(labels = percent_format(accuracy = 1), limits = c(0, 1)) +
+  scale_colour_manual(values = arm_palette) +
+  labs(
+    x = "Observations per cluster (m)",
+    y = "Achieved marginal posterior slope reliability",
+    colour = NULL,
+    shape = NULL,
+    title = "A fixed ICC does not hold slope-score information constant",
+    subtitle = "Dashed lines are the intended posterior-reliability anchors; arms coincide exactly at m = 10"
+  ) +
+  theme_bridge()
+```
+
+```{r manipulation-table}
+
+manipulation %>%
+  group_by(arm_label, mean_clus_size, posterior_reliability_anchor) %>%
+  summarise(
+    achieved_R_range = sprintf(
+      "%.3f--%.3f",
+      min(achieved_reliability), max(achieved_reliability)
+    ),
+    partial_R_range = sprintf(
+      "%.3f--%.3f",
+      min(achieved_partial_reliability),
+      max(achieved_partial_reliability)
+    ),
+    ICC_range = sprintf(
+      "%.3f--%.3f",
+      min(intercept_icc), max(intercept_icc)
+    ),
+    sigma_range = sprintf("%.3f--%.3f", min(sigma), max(sigma)),
+    .groups = "drop"
+  ) %>%
+  arrange(posterior_reliability_anchor, mean_clus_size, arm_label) %>%
+  kable(
+    col.names = c(
+      "Calibration arm", "m", "R anchor", "Achieved marginal R",
+      "Achieved residualized R", "Intercept ICC", "Residual SD"
+    ),
+    caption = "Population manipulation checks; ranges are across the three intercept--slope correlations."
+  )
+```
+
+At $m=10$, both arms use the same residual scale, the same population DGM,
+and the same replication seed. Exact agreement at this anchor is stronger than
+ordinary similarity: it verifies that the paired comparison is wired correctly.
+At $m=3$, ICC anchoring lowers effective slope reliability substantially;
+at $m=25$, it raises it. An ICC-based study would therefore silently combine
+changes in cluster size with changes in Stage-1 slope information.
+
+# Coverage
+
+## Actual coverage by estimator and information level
+
+```{r nonnull-coverage-plot, fig.width=12, fig.height=10}
+
+focal %>%
+  filter(standardized_beta_target == .4) %>%
+  ggplot(aes(
+    x = mean_clus_size,
+    y = coverage,
+    colour = arm_label,
+    shape = rho_label,
+    group = interaction(arm_label, rho_label)
+  )) +
+  geom_hline(yintercept = .95, linetype = 2, colour = "grey35") +
+  geom_errorbar(
+    aes(ymin = coverage_mc_low, ymax = coverage_mc_high),
+    width = .35,
+    alpha = .22,
+    linewidth = .35
+  ) +
+  geom_line(alpha = .45, linewidth = .45) +
+  geom_point(size = 1.8) +
+  facet_grid(method_label ~ target_label) +
+  scale_x_continuous(breaks = c(3, 10, 25)) +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  scale_colour_manual(values = arm_palette) +
+  labs(
+    x = "Observations per cluster (m)",
+    y = "Conditional 95% CI coverage",
+    colour = NULL,
+    shape = NULL,
+    title = "Non-null coverage follows the information induced by each calibration",
+    subtitle = "Points are design cells; vertical bars are 95% Monte Carlo intervals"
+  ) +
+  theme_bridge()
+```
+
+The oracle remains close to nominal and is identical across arms. This rules
+out a truth-coding or generic confidence-interval problem. The feasible methods
+respond to the Stage-1 information manipulation.
+
+The low-information corner is most revealing. At $m=3$ and the .25 anchor,
+the ICC arm achieves slope reliability of only about .07--.08. Average
+non-null coverage across $\rho$ is then
+`r fmt_pct(metric_mean("icc_anchored_at_m10", "fuller_closed_form", .4, "coverage", 3, .25))`
+for Fuller,
+`r fmt_pct(metric_mean("icc_anchored_at_m10", "lai_2spa", .4, "coverage", 3, .25))`
+for 2S-PA, and
+`r fmt_pct(metric_mean("icc_anchored_at_m10", "msem", .4, "coverage", 3, .25))`
+for MSEM. Holding posterior reliability at .25 raises those values to
+`r fmt_pct(metric_mean("posterior_reliability_targeted", "fuller_closed_form", .4, "coverage", 3, .25))`,
+`r fmt_pct(metric_mean("posterior_reliability_targeted", "lai_2spa", .4, "coverage", 3, .25))`,
+and
+`r fmt_pct(metric_mean("posterior_reliability_targeted", "msem", .4, "coverage", 3, .25))`.
+Posterior targeting does not make the .25 conditions easy, but it prevents the
+ICC manipulation from turning a nominal .25 condition into an effective
+reliability-.07 condition.
+
+At $m=25$, the ICC arm provides more posterior information than the named
+anchor, and arm differences are small or sometimes favor ICC anchoring. That
+does not contradict the design recommendation. It demonstrates why ICC is a
+poor common factor for hypotheses about slope-score information: the meaning
+of an “ICC-held-constant” condition changes with the observation schedule.
+
+## Paired arm contrasts
+
+```{r paired-coverage-difference-plot, fig.width=10.5, fig.height=6.5}
+
+pair_metrics %>%
+  filter(
+    method %in% focal_methods,
+    standardized_beta_target == .4
+  ) %>%
+  ggplot(aes(
+    x = factor(mean_clus_size, levels = c(3, 10, 25)),
+    y = coverage_difference,
+    colour = factor(posterior_reliability_anchor),
+    shape = factor(marginal_rho)
+  )) +
+  geom_hline(yintercept = 0, linetype = 2, colour = "grey35") +
+  geom_point(size = 2, alpha = .85) +
+  facet_wrap(~ method_label, ncol = 2) +
+  scale_y_continuous(labels = label_percent(accuracy = 1)) +
+  scale_colour_brewer(palette = "Dark2") +
+  labs(
+    x = "Observations per cluster (m)",
+    y = "Coverage difference: posterior-R minus ICC arm",
+    colour = "R anchor",
+    shape = "rho",
+    title = "Paired coverage contrasts are exactly zero at the m = 10 anchor",
+    subtitle = "Positive values favor posterior-reliability targeting"
+  ) +
+  theme_bridge()
+```
+
+```{r paired-summary-table}
+
+paired_summary %>%
+  transmute(
+    mean_clus_size,
+    method_label,
+    paired_cells,
+    coverage_difference = fmt_pp(mean_coverage_difference),
+    se_difference = fmt_num(mean_se_difference),
+    eligibility_difference = fmt_pp(mean_eligibility_difference)
+  ) %>%
+  kable(
+    col.names = c(
+      "m", "Method", "Paired cells", "Coverage difference",
+      "Mean-SE difference", "Eligibility difference"
+    ),
+    caption = paste(
+      "Posterior-reliability arm minus ICC arm, averaged across reliability,",
+      "rho, and effect cells. Common random numbers sharpen the comparison."
+    )
+  )
+```
+
+# Standard errors and interval scale
+
+Coverage can fail because estimates are off center, because SEs do not track
+sampling variability, because standardized errors have heavy tails, or because
+fit selection changes the analyzed sample. The cell-level ratio below compares
+mean model SE with the empirical SD among interval-eligible replications. A
+value of one is the first-order calibration target. The logarithmic axis keeps
+the genuine 2S-PA and MSEM tail cells visible rather than truncating them.
+
+```{r se-calibration-plot, fig.width=11, fig.height=9}
+
+focal %>%
+  ggplot(aes(
+    x = achieved_reliability,
+    y = mean_se_to_interval_empirical_sd,
+    colour = arm_label,
+    shape = m_label
+  )) +
+  geom_hline(yintercept = 1, linetype = 2, colour = "grey35") +
+  geom_point(alpha = .82, size = 1.8) +
+  facet_grid(method_label ~ effect_label) +
+  scale_x_continuous(labels = percent_format(accuracy = 1)) +
+  scale_y_log10(breaks = c(.5, .75, 1, 1.5, 2, 3, 4)) +
+  scale_colour_manual(values = arm_palette) +
+  labs(
+    x = "Achieved marginal posterior slope reliability",
+    y = "Mean model SE / empirical SD (log scale)",
+    colour = NULL,
+    shape = NULL,
+    title = "SE calibration depends on achieved slope information, not the ICC label alone",
+    subtitle = "Empirical SD uses the same interval-eligible subset as the mean model SE"
+  ) +
+  theme_bridge()
+```
+
+The oracle ratios cluster around one. Fuller is generally stable, but some
+low-information cells have ratios near two. 2S-PA and MSEM show still larger
+ratios in a few low-information cells, alongside lower eligibility. These are
+not plotting outliers to discard: they are evidence that typical SE calibration
+and tail behavior both matter.
+
+The relationship between bias and SE scale makes the Study 5 distinction more
+explicit:
+
+```{r bias-se-mechanism-plot, fig.width=10.5, fig.height=7.5}
+
+focal %>%
+  filter(method %in% feasible_methods) %>%
+  ggplot(aes(
+    x = bias,
+    y = mean_se_to_interval_empirical_sd,
+    colour = arm_label,
+    shape = m_label
+  )) +
+  geom_vline(xintercept = 0, linetype = 2, colour = "grey45") +
+  geom_hline(yintercept = 1, linetype = 2, colour = "grey45") +
+  geom_point(alpha = .82, size = 1.8) +
+  facet_grid(method_label ~ effect_label) +
+  scale_y_log10(breaks = c(.5, .75, 1, 1.5, 2, 3, 4)) +
+  scale_colour_manual(values = arm_palette) +
+  labs(
+    x = "Condition-level mean bias",
+    y = "Mean model SE / empirical SD (log scale)",
+    colour = NULL,
+    shape = NULL,
+    title = "Centering bias and interval-scale failure are distinct",
+    subtitle = "A point near bias = 0 can still have badly scaled or heavy-tailed uncertainty"
+  ) +
+  theme_bridge()
+```
+
+At the null, Fuller and 2S-PA have very small average bias but Type I error
+below 5%; their conservatism therefore cannot be attributed primarily to
+centering. In the lowest-information non-null cells, bias, SE scale, and tail
+behavior all contribute. A mean SE/SD ratio by itself cannot guarantee 95%
+coverage when standardized errors are asymmetric or heavy-tailed.
+
+# Type I error
+
+```{r type1-plot, fig.width=12, fig.height=10}
+
+focal %>%
+  filter(standardized_beta_target == 0) %>%
+  ggplot(aes(
+    x = mean_clus_size,
+    y = type1_error,
+    colour = arm_label,
+    shape = rho_label,
+    group = interaction(arm_label, rho_label)
+  )) +
+  geom_hline(yintercept = .05, linetype = 2, colour = "grey35") +
+  geom_errorbar(
+    aes(ymin = type1_error_mc_low, ymax = type1_error_mc_high),
+    width = .35,
+    alpha = .22,
+    linewidth = .35
+  ) +
+  geom_line(alpha = .45, linewidth = .45) +
+  geom_point(size = 1.8) +
+  facet_grid(method_label ~ target_label) +
+  scale_x_continuous(breaks = c(3, 10, 25)) +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  scale_colour_manual(values = arm_palette) +
+  labs(
+    x = "Observations per cluster (m)",
+    y = "Conditional Type I error",
+    colour = NULL,
+    shape = NULL,
+    title = "Null coverage translated to the Type I error scale",
+    subtitle = "Vertical bars are 95% Monte Carlo intervals; dashed line is alpha = .05"
+  ) +
+  theme_bridge()
+```
+
+```{r null-summary-table}
+
+null_summary %>%
+  transmute(
+    arm_label,
+    mean_clus_size,
+    method_label,
+    eligibility = fmt_pct(eligibility),
+    mean_null_bias = fmt_num(mean_null_bias),
+    conditional_type1 = fmt_pct(conditional_type1),
+    operational_type1 = fmt_pct(operational_type1),
+    cell_range = sprintf(
+      "%s--%s",
+      fmt_pct(minimum_type1), fmt_pct(maximum_type1)
+    )
+  ) %>%
+  kable(
+    col.names = c(
+      "Calibration arm", "m", "Method", "Eligibility", "Mean null bias",
+      "Conditional Type I", "Operational Type I", "Cell range"
+    ),
+    caption = "Null-condition diagnostics, equally weighted across reliability and rho cells."
+  )
+```
+
+The oracle averages approximately 5% Type I error and is identical across
+arms. MSEM is the closest feasible method to nominal: its average null Type I
+error is
+`r fmt_pct(metric_mean("posterior_reliability_targeted", "msem", 0, "type1_error"))`
+under posterior targeting and
+`r fmt_pct(metric_mean("icc_anchored_at_m10", "msem", 0, "type1_error"))`
+under ICC anchoring. These averages still require cell-level inspection.
+
+Fuller and 2S-PA are conservative at the null. Under posterior targeting their
+average Type I errors are
+`r fmt_pct(metric_mean("posterior_reliability_targeted", "fuller_closed_form", 0, "type1_error"))`
+and
+`r fmt_pct(metric_mean("posterior_reliability_targeted", "lai_2spa", 0, "type1_error"))`,
+respectively. For Fuller, holding ICC fixed creates a strong $m$-gradient:
+Type I error moves from
+`r fmt_pct(metric_mean("icc_anchored_at_m10", "fuller_closed_form", 0, "type1_error", 3))`
+at $m=3$ to
+`r fmt_pct(metric_mean("icc_anchored_at_m10", "fuller_closed_form", 0, "type1_error", 25))`
+at $m=25$. Posterior targeting holds it near 2.5%--3% across $m$. Thus an
+arm-average Type I error can hide exactly the information drift the bridge was
+designed to expose.
+
+For 2S-PA, conditional and operational Type I error differ because some fits
+are ineligible. Low operational rejection can reflect both conservative
+intervals and failure to return an interval. Both quantities therefore appear
+in the table.
+
+# Bias and Monte Carlo uncertainty
+
+```{r bias-plot, fig.width=12, fig.height=10}
+
+focal %>%
+  ggplot(aes(
+    x = achieved_reliability,
+    y = bias,
+    ymin = bias_mc_low,
+    ymax = bias_mc_high,
+    colour = arm_label,
+    shape = m_label
+  )) +
+  geom_hline(yintercept = 0, linetype = 2, colour = "grey35") +
+  geom_errorbar(width = .008, alpha = .28, linewidth = .35) +
+  geom_point(size = 1.8, alpha = .85) +
+  facet_grid(method_label ~ effect_label, scales = "free_y") +
+  scale_x_continuous(labels = percent_format(accuracy = 1)) +
+  scale_colour_manual(values = arm_palette) +
+  labs(
+    x = "Achieved marginal posterior slope reliability",
+    y = "Mean bias with 95% Monte Carlo interval",
+    colour = NULL,
+    shape = NULL,
+    title = "Bias is indexed more coherently by achieved slope reliability than by ICC arm",
+    subtitle = "Intervals quantify Monte Carlo uncertainty in each condition-level mean bias"
+  ) +
+  theme_bridge()
+```
+
+```{r bias-summary-table}
+
+arm_effect_summary %>%
+  transmute(
+    arm_label,
+    method_label,
+    effect = standardized_beta_target,
+    cells,
+    eligibility = fmt_pct(eligibility),
+    mean_bias = fmt_num(mean_bias),
+    bias_mc_interval = sprintf(
+      "[%s, %s]",
+      fmt_num(bias_mc_low), fmt_num(bias_mc_high)
+    ),
+    mean_absolute_bias = fmt_num(mean_absolute_bias),
+    mean_coverage = fmt_pct(mean_coverage),
+    success_and_cover = fmt_pct(success_and_cover)
+  ) %>%
+  kable(
+    col.names = c(
+      "Calibration arm", "Method", "Beta", "Cells", "Eligibility",
+      "Mean bias", "95% MC interval", "Mean |bias|", "Coverage",
+      "Success and cover"
+    ),
+    caption = "Effect-specific performance summaries, equally weighted across design cells."
+  )
+```
+
+Null bias is close to zero for the focal methods, including Fuller and 2S-PA.
+Their low null rejection rates are therefore mainly interval-scale, tail, and
+selection phenomena rather than directional centering failures.
+
+For the non-null effect, Fuller is the least biased feasible method. Under
+posterior targeting its equal-cell mean bias is
+`r fmt_num(metric_mean("posterior_reliability_targeted", "fuller_closed_form", .4, "bias"))`,
+compared with
+`r fmt_num(metric_mean("posterior_reliability_targeted", "lai_2spa", .4, "bias"))`
+for 2S-PA and
+`r fmt_num(metric_mean("posterior_reliability_targeted", "msem", .4, "bias"))`
+for MSEM. The apparent overall advantage of the ICC arm for 2S-PA and MSEM is
+not uniform. ICC anchoring gives much lower-than-target reliability at $m=3$
+and higher-than-target reliability at $m=25$, so biases of different signs
+and information levels partially cancel.
+
+The .25-anchor conditions make this especially clear. At $m=3$, ICC
+anchoring yields a Fuller non-null bias of
+`r fmt_num(metric_mean("icc_anchored_at_m10", "fuller_closed_form", .4, "bias", 3, .25))`,
+whereas posterior targeting yields
+`r fmt_num(metric_mean("posterior_reliability_targeted", "fuller_closed_form", .4, "bias", 3, .25))`.
+Holding posterior reliability fixed produces similar small Fuller bias at
+$m=10$ and $m=25$. This is strong evidence for the proposed Fuller-focused
+paper: posterior reliability makes the intended low-information comparison
+coherent across observation schedules, even though Fuller's interval procedure
+still needs qualification.
+
+# Estimator-specific conclusions
+
+## Oracle
+
+The oracle is the calibration benchmark. It has complete eligibility, is
+centered, and remains near 95% coverage and 5% Type I error. Its arm contrasts
+are zero because measurement calibration cannot affect a regression that uses
+the true random effects. This validates the structural truth and paired-random-
+number implementation.
+
+## Fuller
+
+Fuller is the strongest feasible point estimator in this bridge. It is always
+eligible and has much smaller non-null bias than 2S-PA or MSEM when posterior
+reliability is held fixed. ICC anchoring creates severe small-$m$, low-anchor
+attenuation because the actual slope reliability falls far below the label.
+
+Its intervals are not uniformly calibrated. Null Type I error is about 3%
+rather than 5% under posterior targeting, consistent with overcoverage. At the
+non-null effect, posterior-targeted coverage averages
+`r fmt_pct(metric_mean("posterior_reliability_targeted", "fuller_closed_form", .4, "coverage"))`,
+but the .25, $m=3$ cells still under-cover. Thus Study 5's fixed-shape repair
+solves the covariance-geometry confound, and this bridge solves the ICC-versus-
+information confound, but neither repair proves Fuller's Wald intervals are
+nominal in the hardest cells.
+
+## Lai 2S-PA
+
+2S-PA broadly follows the same information gradient as Fuller, but conditional
+coverage must be interpreted together with eligibility. At $m=3$, mean
+interval eligibility rises by
+`r fmt_pp(paired_mean(3, "lai_2spa", "eligibility_difference"))`
+when posterior reliability is held at its intended value rather than allowed
+to fall under ICC anchoring. At $m=25$, the sign reverses because ICC
+anchoring supplies more posterior information. This is fit selection, not only
+interval calibration. The probability of success and coverage is therefore a
+more meaningful operational quantity than conditional coverage alone.
+
+## MSEM
+
+MSEM gives the best Type I-error balance among the feasible methods and has
+near-complete eligibility. Its non-null coverage is less conservative than
+Fuller's and 2S-PA's, but positive bias remains in the lower reliability
+conditions. At the .25 anchor, holding posterior reliability fixed does not
+remove that bias, and some cells remain below 95% coverage. MSEM is therefore a
+valuable inferential comparator, not an oracle substitute.
+
+## Naive BLUP negative control
+
+Naive dual-BLUP regression is omitted from the focal plots because rare ratio
+failures yield condition-level mean biases and SEs many orders of magnitude
+larger than the corrected methods. Including those values on a linear scale
+would make the focal comparisons unreadable. It remains an important negative
+control: its low coverage, elevated null rejection, and numerical instability
+show why Stage-1 uncertainty cannot be ignored.
+
+# Conclusions for Studies 1--4
+
+The bridge supports a simple, coherent explanation for a psychological methods
+audience:
+
+1. **Hold the random-effects covariance shape fixed.** Study 5 showed that
+   manipulating only $\tau_1^2$ creates a geometry confound. The v2 calibrator
+   correctly fixes $\tau_1^2/\tau_0^2$ and the intercept--slope correlation.
+
+2. **Manipulate marginal posterior slope reliability as the shared primary
+   information factor.** It directly describes the precision of the latent
+   slope score under the actual time design. Unlike a fixed ICC, it does not
+   silently change when $m$ changes.
+
+3. **Report ICCs as a crosswalk, not as the primary experimental factor.** The
+   intercept ICC, marginal slope ICC, and conditional slope ICC remain useful
+   population descriptors. Their relation to posterior reliability should be
+   reported for every condition, but no single ICC is a design-invariant
+   substitute for posterior reliability.
+
+4. **Report residualized-slope reliability whenever the random intercept and
+   slope correlate.** Study 5 showed that marginal and residualized reliability
+   can diverge. The bridge does not overturn that conclusion; it addresses a
+   different comparison.
+
+5. **Judge estimators with a multidimensional criterion.** For null effects,
+   report conditional and operational Type I error, directional rejection,
+   bias, and eligibility. For non-null effects, report coverage, bias, empirical
+   SD, model SE, standardized-error behavior, eligibility, and success-and-cover.
+   An arm-average coverage near 95% is insufficient because conservative null
+   cells can cancel liberal non-null cells.
+
+The balanced substantive conclusion is that posterior reliability is the more
+defensible factor for testing the paper's key hypotheses, while ICC remains an
+important reporting and translation device. Posterior reliability is not a
+magic scalar: even when it is held fixed, $m$, the time design, correlation,
+and estimator behavior can affect coverage. Its advantage is conceptual and
+design-based—it holds constant the information quantity most closely connected
+to the Stage-1 slope estimates used downstream.
+
+# Appendix: Fuller variants and robust diagnostics
+
+```{r fuller-variant-table}
+
+fuller_variant_labels <- c(
+  fuller_closed_form = "Stabilized",
+  fuller_book_preliminary_closed_form = "Book preliminary",
+  fuller_book_closed_form = "Book equations",
+  fuller_alpha_stepdown_closed_form = "Alpha-stepdown"
+)
+
+cell_metrics %>%
+  filter(method %in% names(fuller_variant_labels)) %>%
+  mutate(variant = unname(fuller_variant_labels[method])) %>%
+  group_by(arm_label, variant) %>%
+  summarise(
+    eligibility = mean(.data$interval_eligibility, na.rm = TRUE),
+    null_type1 = mean(
+      .data$type1_error[standardized_beta_target == 0],
+      na.rm = TRUE
+    ),
+    nonnull_coverage = mean(
+      .data$coverage[standardized_beta_target == .4],
+      na.rm = TRUE
+    ),
+    nonnull_bias = mean(
+      .data$bias[standardized_beta_target == .4],
+      na.rm = TRUE
+    ),
+    median_cell_se_ratio = median(
+      .data$mean_se_to_interval_empirical_sd,
+      na.rm = TRUE
+    ),
+    maximum_cell_p99_se = max(.data$p99_se, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    eligibility = fmt_pct(eligibility),
+    null_type1 = fmt_pct(null_type1),
+    nonnull_coverage = fmt_pct(nonnull_coverage),
+    nonnull_bias = fmt_num(nonnull_bias),
+    median_cell_se_ratio = fmt_num(median_cell_se_ratio),
+    maximum_cell_p99_se = fmt_num(maximum_cell_p99_se)
+  ) %>%
+  kable(
+    col.names = c(
+      "Calibration arm", "Fuller variant", "Eligibility", "Null Type I",
+      "Non-null coverage", "Non-null bias", "Median cell SE/SD",
+      "Largest cell p99 SE"
+    ),
+    caption = paste(
+      "Fuller variants retained to show which algebraic choices regularize",
+      "the SE tail. The stabilized variant is primary in the report."
+    )
+  )
+```
+
+The variant comparison is diagnostic rather than a license to choose the
+best-looking result after observing coverage. The stabilized Fuller path is the
+predeclared focal variant because it uses the corrected predictor--outcome
+measurement-error covariance and the regularized variance construction. The
+book-equation and alpha-stepdown variants document which modification controls
+the SE tail and should remain labeled as sensitivity analyses.
+
+```{r session-info}
+
+metadata_files <- list.files(
+  output_dir,
+  pattern = "_run_metadata[.]csv$",
+  full.names = TRUE
+)
+metadata <- data.table::rbindlist(
+  lapply(metadata_files, data.table::fread),
+  fill = TRUE,
+  use.names = TRUE
+) %>%
+  tibble::as_tibble()
+
+metadata %>%
+  distinct(
+    pipeline_version, requested_n_sim, r_version, mplus_version,
+    package_openmx_version, package_mplusautomation_version
+  ) %>%
+  kable(caption = "Simulation software provenance recorded by the production run.")
+```

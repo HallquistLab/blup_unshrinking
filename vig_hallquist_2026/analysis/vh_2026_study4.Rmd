@@ -1,0 +1,98 @@
+---
+  title: "Structural Random Effects"
+  author: "Zach Vig & Michael Hallquist"
+  date: "`r format(Sys.time(), '%d %B, %Y')`"
+  output:
+    html_document:
+      toc: true
+      toc_depth: 2
+      toc_float: true
+      number_sections: true
+    editor_options: 
+      chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+pacman::p_load(tidyverse, ggh4x)
+source_helpers <- function() {
+  analysis_dir <- here::here("vig_hallquist_2026", "analysis")
+  source(file.path(analysis_dir, "data_import.R"))
+  source(here::here("R", "core_utils.R"))
+  source(here::here("R", "sim_diagnostics.R"))
+  source(here::here("vig_hallquist_2026", "vh_study4.R"))
+}
+source_helpers()
+```
+
+# Study 4: Heterogenous Cluster Sizes
+
+## Load Data
+```{r}
+# Load data
+study4 <- read_study_cache("study4", this_run = "vig_hallquist_slurm_7_23_26") %>%
+  add_study4_analysis_eligibility() %>%
+  mutate(
+      converged = point_eligible,
+      bias = estimate - truth,
+      rel_bias = case_when(
+          truth == 0 ~ NA_real_,
+          TRUE ~ (estimate - truth) / truth
+      ),
+      sq_error = (estimate - truth)^2,
+      covered = if_else(interval_eligible, ci_low <= truth & ci_high >= truth, NA),
+      num_clus_fac = factor(num_clus, levels = c(30, 50, 100, 150, 300))
+  )
+```
+
+```{r}
+study4_method_labels <- c(
+  "oracle_dual" = "Oracle with Both",
+  "naive_dual_blup" = "OLS with Both BLUPs",
+  "closed_form_dual" = "OLS with Both MLEs",
+  "fuller_closed_form" = "Fuller (stabilized)",
+  "fuller_book_preliminary_closed_form" = "Fuller (book preliminary)",
+  "fuller_book_closed_form" = "Fuller (book equations)",
+  "fuller_alpha_stepdown_closed_form" = "Fuller (alpha stepdown)",
+  "fuller_average_measurement" = "Fuller Average",
+  "lai_2spa" = "Lai (2-SPA)",
+  "lai_2spaa" = "Lai (2-SPAA)",
+  "msem" = "MSEM"
+)
+```
+
+## Hypotheses
+* H1: Advantage of row-specific correction. At a given level of mean reliability, increasing reliability heterogeneity will not meaningfully increase the point-estimate bias of row-specific unshrinking plus Fuller or Lai 2S-PA.
+
+* H2: Effect of averaging measurement information. As the dispersion of cluster-specific and increases, the difference between each row-specific estimator and its average-measurement counterpart will increase. (I think this only applies to the non-null structural conditions.)
+
+* H3: Naive OLS with unshrunk scores will not solve the problem. OLS regression using unshrunk predictor scores should be attenuated because the unshrunk scores contain additive sampling error. Fuller and 2S-PA should remove or substantially reduce this attenuation.
+
+* H4: BLUP predictor performance. Regression on the full BLUP vector will show little point-estimate bias as reliability heterogeneity increases. However, conventional homoskedastic standard errors may become miscalibrated as conditional score uncertainty becomes more heterogeneous. (This could be strengthened by reporting an HC3 interval for the same BLUP regression. The primary concern under heterogeneous information is conditional heteroskedasticity. Comparing conventional and HC3 SEs would identify whether the inferential problem can be addressed without score unshrinking. But then we end up with the problem of when/whether to bring in HC3)
+
+* H5: Agreement when information is homogeneous. When cluster-specific measurement inputs are effectively constant, the mean difference between each row-specific estimator and its average measurement counterpart will be negligible. Thus, row-specific and average-measurement Fuller should agree, as should 2S-PA and 2S-PAA. (In many respects, this should already be evident from the results of Studies 1 and 2.)
+
+* H6: Slope-information control condition. With zero intercept–slope correlation, the slope-information matched control will produce smaller row-specific-versus-average differences than the ordinary severe heterogeneity condition, despite having the same unequal cluster counts. That is, we should see much smaller PA–PAA and Fuller vs. Fuller-average differences than the ordinary severe profile.
+
+* H7: Numerical stability under sparse information. The largest 2S-PA and Fuller admissibility problems and extreme estimates should occur for, mean reliability .25, and severe heterogeneity. For Fuller, alpha-stepdown should reduce failure rates and extreme RMSE, potentially at the cost of regularization bias. Perhaps we should also track the tails of the error distribution since RMSE tends to go wild with a few lousy estimates. Here, we could say alpha-stepdown will reduce the 95\% upper error tail.
+
+* H8: Direct-model benchmark. Under correct specification and adequate sample size, the row-specific two-stage methods should approach the MSEM and oracle estimator targets.
+
+## Bias
+```{r}
+# first look at slope-intercept correlation (versus effect size)
+bias_cor <- study4 %>%
+  filter(analysis_eligible & !is_falsification_control) %>%
+  filter(standardized_beta_target > 0) %>%
+  ggplot(aes(x = target_reliability, y = rel_bias, fill = method)) +
+  facet_nested("Slope-Intercept Correlation" + marginal_rho ~ "Information Profile" + information_profile) +
+  stat_summary(fun = mean, geom = "col", position = "dodge") +
+  scale_fill_discrete(labels = study4_method_labels) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(x = "Slope Reliability", y = "Relative Bias", fill = "Method",
+       title = "Study 2: Relative Bias (Converged Replications)") +
+  theme_bw(base_size = 14, base_family = "sans") +
+  theme(legend.position = "bottom", plot.title = element_text(hjust = 0.5))
+
+print(bias_cor)
+```

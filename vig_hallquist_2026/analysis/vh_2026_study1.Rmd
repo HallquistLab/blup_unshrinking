@@ -1,0 +1,364 @@
+---
+  title: "Structural Random Effects"
+  author: "Zach Vig & Michael Hallquist"
+  date: "`r format(Sys.time(), '%d %B, %Y')`"
+  output:
+    html_document:
+      toc: true
+      toc_depth: 2
+      toc_float: true
+      number_sections: true
+    editor_options: 
+      chunk_output_type: inline 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+pacman::p_load(tidyverse, ggh4x, knitr, kableExtra, effectsize)
+source_helpers <- function() {
+  analysis_dir <- here::here("vig_hallquist_2026", "analysis")
+  source(file.path(analysis_dir, "data_import.R"))
+  source(here::here("R", "core_utils.R"))
+  source(here::here("R", "sim_diagnostics.R"))
+  source(here::here("vig_hallquist_2026", "vh_study2.R"))
+}
+source_helpers()
+```
+
+# Study 1: Random-Effect-as-Outcome
+
+```{r}
+# Load data
+study1 <- read_study_cache("study1", this_run = "vig_hallquist_slurm_7_23_26") %>%
+  add_vh_analysis_eligibility() %>%
+  mutate(
+      status10_failure = !is.na(status_code) & status_code == 10L,
+      converged = point_eligible,
+      bias = estimate - truth,
+      rel_bias = case_when(
+          truth == 0 ~ NA_real_,
+          TRUE ~ (estimate - truth) / truth
+      ),
+      sq_error = (estimate - truth)^2,
+      covered = if_else(interval_eligible, ci_low <= truth & ci_high >= truth, NA),
+      num_clus_fac = factor(num_clus, levels = c(30, 50, 100, 150, 300)),
+      is_two_step = !(method %in% c("direct_mlm"))
+  )
+```
+
+```{r}  
+study1_method_labels <- c(
+  "fuller_closed_form" = "Fuller (stabilized)",
+  "fuller_book_preliminary_closed_form" = "Fuller (book preliminary)",
+  "fuller_book_closed_form" = "Fuller (book equations)",
+  "lai_2spa" = "Lai (2-SPA)",
+  "naive_blup" = "OLS w/ BLUP",
+  "fuller_alpha_stepdown_closed_form" = "Fuller (alpha stepdown)",
+  "closed_form" = "OLS w/ CF",
+  "single_subject_ols" = "OLS w/ SS-OLS",
+  "direct_mlm" = "Direct MLM",
+  "oracle" = "Oracle"
+)
+study1_point_est_methods <- c(
+  "fuller_closed_form",
+  "fuller_book_preliminary_closed_form",
+  "fuller_book_closed_form",
+  "lai_2spa",
+  "naive_blup",
+  "direct_mlm",
+  "oracle"
+)
+```
+
+
+ ## Hypotheses
+* H1. Naive BLUP-as-outcome regressions should be attenuated, especially when cluster size is small, slope reliability is low, and shrinkage is strong.
+* H2. Closed-form scores should reduce or remove point-estimate bias under correct first-stage specification.
+* H3. The direct MLM should be the best benchmark and should agree with the oracle target asymptotically.
+
+## Bias
+
+
+### Plots
+
+```{r out.extra="style='max-width: 100%; height: auto;'"}
+bias_null_effect <- study1 %>%
+  filter(converged) %>%
+  filter(standardized_beta_target == 0) %>%
+  filter(method %in% study1_point_est_methods) %>%
+  ggplot(aes(x = target_reliability, y = bias, fill = method)) +
+  facet_nested("Slope-Intercept Correlation" + marginal_rho ~ "Number of Clusters" + as.factor(num_clus)) +
+  stat_summary(data = ~ dplyr::filter(.x, method != "oracle"), fun = mean, geom = "col", position = "dodge") +
+  stat_summary(data = ~ dplyr::filter(.x, method == "oracle"), fun = mean, geom = "point", color = "black", size = 1) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_fill_discrete(labels = study1_method_labels) +
+  labs(x = "Slope Reliability", y = "Bias", fill = "Method",
+       title = "Study 1: Bias for Null Effect (Converged Replications)") +
+  theme_bw(base_size = 14, base_family = "sans") +
+  theme(legend.position = "bottom", plot.title = element_text(hjust = 0.5))
+print(bias_null_effect)
+```
+
+For the null effect size, all methods show virtually zero bias. Slope-intercept correlation of zero shows slightly lower bias than non-zero ones.
+
+```{r out.extra="style='max-width: 100%; height: auto;'"}
+bias_num_clus <- study1 %>%
+  filter(converged) %>%
+  filter(standardized_beta_target > 0) %>%
+  filter(method %in% study1_point_est_methods) %>%
+  ggplot(aes(x = target_reliability, y = rel_bias, fill = method)) +
+  facet_nested("Slope-Intercept Correlation" + marginal_rho ~ "Number of Clusters" + as.factor(num_clus)) +
+  stat_summary(data = ~ dplyr::filter(.x, method != "oracle"), fun = mean, geom = "col", position = "dodge") +
+  stat_summary(data = ~ dplyr::filter(.x, method == "oracle"), fun = mean, geom = "point", color = "black", size = 1) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_fill_discrete(labels = study1_method_labels) +
+  labs(x = "Slope Reliability", y = "Relative Bias", fill = "Method",
+       title = "Study 1: Relative Bias (Converged Replications)") +
+  theme_bw(base_size = 14, base_family = "sans") +
+  theme(legend.position = "bottom", plot.title = element_text(hjust = 0.5))
+print(bias_num_clus)
+```
+
+Bias is virtually equivalent across number of clusters per slope reliability and slope-intercept correlation. This makes sense given that no matter the number of clusters, the slope estimator is unbiased.
+
+```{r}
+# Bias doesn't change much over number of clusters, so average over it.
+# Effect size == 0 shows no effect so filter that out.
+# Naive BLUP bias overtakes everything else so need a second plot
+bias_w_blup <- study1 %>%
+  filter(converged) %>%
+  filter(standardized_beta_target > 0) %>%
+  filter(method %in% study1_point_est_methods) %>%
+  ggplot(aes(x = target_reliability, y = rel_bias, fill = method)) +
+  facet_nested("Effect Size" + standardized_beta_target ~ "Slope-Intercept Correlation" + marginal_rho) +
+  stat_summary(data = ~ dplyr::filter(.x, method != "oracle"), fun = mean, geom = "col", position = "dodge") +
+  stat_summary(data = ~ dplyr::filter(.x, method == "oracle"), fun = mean, geom = "point", color = "black", size = 1) +
+  scale_fill_discrete(labels = study1_method_labels) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(x = "Slope Reliability", y = "Relative Bias", fill = "Method",
+       title = "Study 1: Relative Bias (Converged Replications)") +
+  theme_bw(base_size = 14, base_family = "sans") +
+  theme(legend.position = "bottom", plot.title = element_text(hjust = 0.5))
+print(bias_w_blup)
+```
+
+The naive BLUP method evidently produces severe negative bias, i.e., slope attenuation. This verifies hypothesis one. The following plot removes naive BLUP to more clearly see the remaining methods.
+
+```{r}
+# remove naive BLUP to see the other methods more clearly
+bias_wo_blup <- study1 %>%
+  filter(converged) %>%
+  filter(standardized_beta_target > 0) %>%
+  filter(method %in% study1_point_est_methods) %>%
+  filter(method != "naive_blup") %>%
+  ggplot(aes(x = target_reliability, y = rel_bias, fill = method)) +
+  facet_nested("Effect Size" + standardized_beta_target ~ "Slope-Intercept Correlation" + marginal_rho) +
+  stat_summary(data = ~ dplyr::filter(.x, method != "oracle"), fun = mean, geom = "col", position = "dodge") +
+  stat_summary(data = ~ dplyr::filter(.x, method == "oracle"), fun = mean, geom = "point", color = "black", size = 1) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_fill_discrete(labels = study1_method_labels) +
+  labs(x = "Slope Reliability", y = "Relative Bias", fill = "Method",
+       title = "Study 1: Relative Bias (Converged Replications)") +
+  theme_bw(base_size = 14, base_family = "sans") +
+  theme(legend.position = "bottom", plot.title = element_text(hjust = 0.5))
+print(bias_wo_blup)
+```
+
+Among the remaining methods, 2-SPA shows the most *positive* relative bias, nearing 15\% in the low reliability, high slope-intercept correlation conditions. Conversely, direct MLM and Fuller show near-zero bias. As hypothesized, closed-form scores via Fuller remove the bias of the naive BLUP approach.
+
+### ANOVA Model
+
+```{r}
+# super slow estimation right now
+rel_bias_aov <- study1 %>%
+  filter(converged & !stage1_singular_problem) %>%
+  filter(standardized_beta_target > 0) %>%
+  filter(method %in% study1_point_est_methods & method != "oracle" & method != "naive_blup") %>%
+  mutate(
+    Method = as.factor(method),
+    EffectSize = as.factor(standardized_beta_target),
+    Correlation = as.factor(marginal_rho),
+    Reliability = as.factor(target_reliability),
+    NumClus = as.factor(num_clus),
+    ClusSize = as.factor(mean_clus_size)
+  ) %>%
+  aov(rel_bias ~ (Method + Reliability + EffectSize + Correlation + NumClus + ClusSize)^3, data = .)
+
+#summary(rel_bias_aov)
+eta_squared(rel_bias_aov, partial = TRUE)
+```
+
+The ANOVA model confirms that among the remaining methods, estimators are unbiased in all conditions (as expected).
+
+## RMSE
+
+```{r}
+rmse_eff_size <- study1 %>%
+  filter(converged) %>%
+  filter(standardized_beta_target > 0) %>%
+  filter(method %in% study1_point_est_methods) %>%
+  ggplot(aes(x = target_reliability, y = sq_error, fill = method)) +
+  facet_nested("Effect Size" + standardized_beta_target ~ "Number of Clusters" + num_clus_fac) +
+  stat_summary(data = ~ dplyr::filter(.x, method != "oracle"), fun = function(x) sqrt(mean(x)), geom = "col", position = "dodge") +
+  stat_summary(data = ~ dplyr::filter(.x, method == "oracle"), fun = mean, geom = "point", color = "black", size = 1) +
+  scale_fill_discrete(labels = study1_method_labels) +
+  labs(x = "Slope Reliability", y = "RMSE", fill = "Method",
+       title = "Study 1: RMSE by Effect Size (Converged Replications)") +
+  theme_bw(base_size = 14, base_family = "sans") +
+  theme(legend.position = "bottom", plot.title = element_text(hjust = 0.5))
+
+print(rmse_eff_size)
+```
+
+RMSE decreases with more clusters and greater slope reliability. Lai 2-SPA shows marginally greater RMSE in low reliability-small number of cluster conditions than Fuller/direct MLM.
+
+```{r}
+rmse_corr <- study1 %>%
+  filter(converged) %>%
+  filter(standardized_beta_target > 0) %>%
+  filter(method %in% study1_point_est_methods) %>%
+  ggplot(aes(x = target_reliability, y = sq_error, fill = method)) +
+  facet_nested("Slope-Intercept Correlation" + marginal_rho ~ "Number of Clusters" + num_clus_fac) +
+  stat_summary(data = ~ dplyr::filter(.x, method != "oracle"), fun = function(x) sqrt(mean(x)), geom = "col", position = "dodge") +
+  stat_summary(data = ~ dplyr::filter(.x, method == "oracle"), fun = function(x) sqrt(mean(x)), geom = "point", color = "black", size = 1) +
+  scale_fill_discrete(labels = study1_method_labels) +
+  labs(x = "Slope Reliability", y = "RMSE", fill = "Method",
+       title = "Study 1: RMSE by Effect Size (Converged Replications)") +
+  theme_bw(base_size = 14, base_family = "sans") +
+  theme(legend.position = "bottom", plot.title = element_text(hjust = 0.5))
+
+print(rmse_corr)
+```
+
+When faceting by slope-intercept correlation, zero correlation conditions showed lower RMSE on average. Previous trends remainined the same.
+
+
+## Coverage
+
+```{r}
+coverage_blup <- study1 %>%
+  filter(interval_eligible) %>%
+  mutate(covered = as.numeric(covered)) %>%
+  filter(method == "naive_blup") %>%
+  mutate(effect_label = "Effect Size", cor_label = "Slope-Intercept Correlation") %>%
+  ggplot(aes(x = target_reliability, y = covered)) +
+  facet_nested(cor_label + marginal_rho ~ effect_label + standardized_beta_target) +
+  stat_summary(fun = mean, geom = "col", position =  "dodge", fill = "#00BA38") +  
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  geom_hline(yintercept = 0.95, linetype = "dashed") +
+  labs(x = "Slope Reliability", y = "Coverage",
+       title = "Study 1: Coverage in Naive BLUPs (Converged Replications)") +
+  theme_bw(base_size = 14, base_family = "sans") +
+  theme(legend.position = "bottom", plot.title = element_text(hjust = 0.5))
+
+print(coverage_blup)
+```
+
+Naive BLUP showed severe undercoverage in non-zero effect size conditions. Low slope reliability conditions showed especially small coverage (around 10\%).
+
+```{r coverage}
+# naive blups led to severe undercoverage, so remove them to see the other methods more clearly
+coverage <- study1 %>%
+  filter(interval_eligible) %>%
+  mutate(covered = as.numeric(covered)) %>%
+  filter(method != "naive_blup" & method != "oracle") %>%
+  mutate(num_clus_label = "Number of Clusters", cor_label = "Slope-Intercept Correlation") %>%
+  ggplot(aes(x = target_reliability, y = covered, fill = method)) +
+  facet_nested(cor_label + marginal_rho ~ num_clus_label + num_clus_fac) +
+  stat_summary(fun = mean, geom = "col", position =  "dodge") +
+  scale_fill_discrete(labels = study1_method_labels) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  coord_cartesian(ylim = c(0.9, 1)) +
+  geom_hline(yintercept = 0.95, linetype = "dashed") +
+  labs(x = "Slope Reliability", y = "Coverage", fill = "Method",
+       title = "Study 1: Coverage (Converged Replications)") +
+  theme_bw(base_size = 14, base_family = "sans") +
+  theme(legend.position = "bottom", plot.title = element_text(hjust = 0.5))
+
+print(coverage)
+```
+
+Fuller (with and without alpha-stepdown) tended to show overcoverage (though this decreased with greater slope reliability), and the remaining methods showed good coverage or slight undercoverage.
+
+## Standard Errors
+
+```{r}
+se_table <- study1 %>%
+  filter(interval_eligible) %>%
+  filter(method != "naive_blup" & method != "oracle") %>%
+  group_by(method, num_clus_fac, target_reliability, marginal_rho, mean_clus_size, standardized_beta_target) %>%
+  summarize(
+    mean_se = mean(se),
+    empirical_se = sd(estimate),
+    se_rel_bias = (mean_se - empirical_se) / empirical_se,
+    .groups = "drop_last"
+  )
+se <- se_table %>%
+  ggplot(aes(x = target_reliability, y = se_rel_bias, fill = method)) +
+  facet_nested("Slope-Intercept Correlation" + marginal_rho ~ "Number of Clusters" + num_clus_fac) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_fill_discrete(labels = study1_method_labels) +
+  labs(x = "Slope Reliability", y = "SE Bias", fill = "Method",
+       title = "Study 1: SE Bias (Converged Replications)") +
+  theme_bw(base_size = 14, base_family = "sans") +
+  theme(legend.position = "bottom", plot.title = element_text(hjust = 0.5))
+
+print(se)
+```
+
+Fuller variants show generally positively biased standard errors, while Lai 2-SPA shows negatively biased standard errors, especially in low reliability conditions.
+
+## Convergence
+
+```{r}
+plot_convergence <- function(df, subtitle) {
+  df %>%
+  ggplot(
+    aes(
+      x = target_reliability,
+      y = converged,
+      color = method,
+      group = method
+    )
+  ) +
+  stat_summary(fun = safe_mean, geom = "line", linewidth = 1) +
+  stat_summary(fun = safe_mean, geom = "point", size = 2) +
+  scale_y_continuous(
+    labels = scales::label_percent(),
+    limits = c(0, 1)
+  ) +
+  facet_nested(
+    "Slope-Intercept Correlation" + marginal_rho ~ "Number of Clusters" + as.factor(num_clus)
+  ) +
+  labs(
+    x = "Slope Reliability",
+    y = "Convergence Rate",
+    color = "Method",
+    title = "Study 1: Convergence Rate",
+    subtitle = subtitle
+  ) +
+  theme_bw(base_size = 14, base_family = "sans") +
+  theme(legend.position = "bottom", plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5)) +
+  scale_color_discrete(labels = study1_method_labels)
+}
+
+convergence <- plot_convergence(
+  study1 %>%
+  filter(
+    method %in% c("fuller_closed_form", "lai_2spa", "direct_mlm")
+  ),
+  "*Includes Stage 1 Singular Fits"
+)
+convergence2 <- plot_convergence(
+  study1 %>%
+  filter(
+    method %in% c("fuller_closed_form", "lai_2spa", "direct_mlm")
+  ) %>%
+  filter(!stage1_singular_problem),
+  "*Does NOT Include Stage 1 Singular Fits"
+)
+print(convergence); print(convergence2)
+```
+
+The vast majority of convergence problems were isolated to the first stage, specifically cases of singularity. Removing these cases leaves nearly 100\% convergence for all conditions. Thus, Fuller/Fuller variants do not show a noticeable convergence advantage in the random-effect-as-outcome scenario.

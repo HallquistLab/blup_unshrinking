@@ -1,0 +1,101 @@
+---
+  title: "Structural Random Effects"
+  author: "Zach Vig & Michael Hallquist"
+  date: "`r format(Sys.time(), '%d %B, %Y')`"
+  output:
+    html_document:
+      toc: true
+      toc_depth: 2
+      toc_float: true
+      number_sections: true
+    editor_options: 
+      chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+pacman::p_load(tidyverse, ggh4x)
+source_helpers <- function() {
+  analysis_dir <- here::here("vig_hallquist_2026", "analysis")
+  source(file.path(analysis_dir, "data_import.R"))
+  source(here::here("R", "core_utils.R"))
+  source(here::here("R", "sim_diagnostics.R"))
+  source(here::here("vig_hallquist_2026", "vh_study3.R"))
+}
+source_helpers()
+```
+
+# Study 3: Random Effects on Both Sides of the Equation
+
+## Load Data
+```{r}
+# Load data
+study3 <- read_study_cache("study3", this_run = "vig_hallquist_slurm") %>%
+  add_study3_analysis_eligibility() %>%
+  mutate(
+      converged = point_eligible,
+      bias = estimate - truth,
+      rel_bias = case_when(
+          truth == 0 ~ NA_real_,
+          TRUE ~ (estimate - truth) / truth
+      ),
+      sq_error = (estimate - truth)^2,
+      covered = if_else(interval_eligible, ci_low <= truth & ci_high >= truth, NA),
+      num_clus_fac = factor(num_clus, levels = c(30, 50, 100, 150, 300))
+  )
+```
+
+```{r}
+study3_method_labels <- c(
+  "oracle_dual" = "Oracle with Both",
+  "naive_blup_on_blup" = "BLUP on BLUP",
+  "closed_form_on_blup" = "MLE on BLUP",
+  "blup_on_closed_form" = "BLUP on MLE",
+  "closed_form_on_closed_form" = "MLE on MLE",
+  "fuller_closed_form" = "Fuller (stabilized)",
+  "fuller_book_preliminary_closed_form" = "Fuller (book preliminary)",
+  "fuller_book_closed_form" = "Fuller (book equations)",
+  "fuller_alpha_stepdown_closed_form" = "Fuller (alpha stepdown)",
+  "lai_2spa" = "Lai (2-SPA)",
+  "sem" = "Latent Curve Model"
+)
+```
+
+## Hypotheses
+* H1. Naive BLUP-on-BLUP regressions should be unreliable because outcome-side shrinkage, predictor-side measurement error, and heterogeneous reliability act together.
+* H2. Correcting only one side should help only for the component of the problem it targets. For example, unshrinking the outcome addresses outcome attenuation but does not fix predictor measurement error.
+* H3. Full two-sided measurement correction, either through Lai 2S-PA or a closed-form-score Fuller moment correction, should best recover point estimates and coverage.
+* H4. The method differences should be largest when one first-stage process has many observations and the other has few, because this creates asymmetric score reliability.
+
+## Bias
+
+```{r}
+# first look at slope-intercept correlation and effect size
+bias_cor_es <- study3 %>%
+  filter(converged & !stage1_singular_problem) %>%
+  filter(standardized_beta_target > 0) %>%
+  ggplot(aes(x = standardized_beta_target, y = rel_bias, fill = method)) +
+  facet_nested("Slope-Intercept Correlation" + marginal_rho ~ "Number of Clusters" + num_clus_fac) +
+  stat_summary(fun = mean, geom = "col", position = "dodge") +
+  scale_fill_discrete(labels = study3_method_labels) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(x = "Effect Size", y = "Relative Bias", fill = "Method",
+       title = "Study 3: Relative Bias (Converged Replications)") +
+  theme_bw(base_size = 14, base_family = "sans") +
+  theme(legend.position = "bottom", plot.title = element_text(hjust = 0.5))
+# then look at reliabilities
+bias_rel <- study3 %>%
+  filter(converged & !stage1_singular_problem) %>%
+  filter(standardized_beta_target > 0) %>%
+  ggplot(aes(x = num_clus_fac, y = rel_bias, fill = method)) +
+  facet_nested("Predictor Reliability" + target_reliability_q ~ "Outcome Reliability" + target_reliability_y) +
+  stat_summary(fun = mean, geom = "col", position = "dodge") +
+  scale_fill_discrete(labels = study3_method_labels) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(x = "Number of Clusters", y = "Relative Bias", fill = "Method",
+       title = "Study 3: Relative Bias (Converged Replications)") +
+  theme_bw(base_size = 14, base_family = "sans") +
+  theme(legend.position = "bottom", plot.title = element_text(hjust = 0.5))
+
+print(bias_cor_es); print(bias_rel)
+```

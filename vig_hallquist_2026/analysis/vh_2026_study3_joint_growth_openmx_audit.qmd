@@ -1,0 +1,655 @@
+---
+title: "VH Study 3v2 Diagnostic: The Same Joint-Growth Model in Mplus and OpenMx"
+author: "Simulation analysis"
+date: "25 August 2026"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: true
+    embed-resources: true
+    html-math-method: katex
+params:
+  output_dir: "outputs/vig_hallquist_v2/study3_joint_growth_openmx_audit"
+  expected_n_rep: 100
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE, warning = FALSE, message = FALSE,
+  fig.align = "center", dpi = 120, out.width = "100%"
+)
+suppressPackageStartupMessages({
+  library(data.table)
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(knitr)
+  library(scales)
+})
+
+input_path <- tryCatch(knitr::current_input(dir = TRUE), error = function(e) "")
+analysis_dir <- if (nzchar(input_path)) {
+  dirname(normalizePath(input_path, mustWork = FALSE))
+} else {
+  getwd()
+}
+repo_root <- normalizePath(file.path(analysis_dir, "..", ".."), mustWork = TRUE)
+output_dir <- if (grepl("^/", params$output_dir)) {
+  params$output_dir
+} else {
+  file.path(repo_root, params$output_dir)
+}
+paired_path <- file.path(output_dir, "paired_results.csv.gz")
+required_paths <- c(
+  paired_path,
+  file.path(output_dir, "method_summary.csv.gz"),
+  file.path(output_dir, "paired_summary.csv.gz"),
+  file.path(output_dir, "exclusion_reason_summary.csv.gz")
+)
+if (any(!file.exists(required_paths))) {
+  stop(
+    "The paired diagnostic is incomplete; missing: ",
+    paste(basename(required_paths[!file.exists(required_paths)]), collapse = ", ")
+  )
+}
+
+paired <- data.table::fread(paired_path) %>% tibble::as_tibble()
+method_summary <- data.table::fread(required_paths[[2L]]) %>% tibble::as_tibble()
+paired_summary <- data.table::fread(required_paths[[3L]]) %>% tibble::as_tibble()
+reason_summary <- data.table::fread(required_paths[[4L]]) %>% tibble::as_tibble()
+
+expected_version <- "study3_joint_growth_mplus_openmx_audit_v1_20260825"
+expected_reps <- seq_len(as.integer(params$expected_n_rep))
+completion <- paired %>%
+  group_by(.data$sentinel_index, .data$condition_id) %>%
+  summarise(
+    rows = n(),
+    unique_reps = n_distinct(.data$rep),
+    complete_rep_set = setequal(.data$rep, expected_reps),
+    .groups = "drop"
+  )
+audit_complete <-
+  nrow(completion) == 6L &&
+  all(completion$rows == length(expected_reps)) &&
+  all(completion$unique_reps == length(expected_reps)) &&
+  all(completion$complete_rep_set) &&
+  identical(unique(paired$audit_version), expected_version) &&
+  all(paired$replication_seed == paired$mplus_replication_seed) &&
+  all(abs(paired$truth - paired$mplus_truth) < 1e-12)
+if (!audit_complete) {
+  stop("Refusing to render: paired audit completion or seed contract failed.")
+}
+
+sentinel_levels <- paired %>%
+  distinct(.data$sentinel_index, .data$sentinel_label) %>%
+  arrange(.data$sentinel_index)
+sentinel_short <- c(
+  "1. Low-low, null, rho=0, N=50",
+  "2. Low-low, beta=.5, rho=.5, N=50",
+  "3. Low-high, beta=.5, rho=.5, N=50",
+  "4. High-low, beta=.5, rho=.5, N=50",
+  "5. High-high, beta=.5, rho=.5, N=50",
+  "6. Low-low, beta=.5, rho=.5, N=300"
+)
+names(sentinel_short) <- sentinel_levels$sentinel_label
+add_labels <- function(data) {
+  data %>%
+    mutate(
+      sentinel = factor(
+        unname(sentinel_short[.data$sentinel_label]),
+        levels = unname(sentinel_short)
+      )
+    )
+}
+paired <- add_labels(paired)
+method_summary <- add_labels(method_summary) %>%
+  mutate(method = factor(
+    .data$method,
+    levels = c("Mplus MSEM", "OpenMx matched joint growth")
+  ))
+paired_summary <- add_labels(paired_summary)
+reason_summary <- add_labels(reason_summary)
+
+method_palette <- c(
+  "Mplus MSEM" = "#59A14F",
+  "OpenMx matched joint growth" = "#4E79A7"
+)
+theme_vh <- function() {
+  theme_bw(base_size = 10.5) +
+    theme(
+      panel.grid.minor = element_blank(),
+      legend.position = "bottom",
+      strip.background = element_rect(fill = "grey95", colour = "grey75")
+    )
+}
+fmt_pct <- function(x, accuracy = .1) percent(x, accuracy = accuracy)
+fmt_num <- function(x, digits = 3) formatC(x, digits = digits, format = "f")
+
+method_long <- bind_rows(
+  paired %>% transmute(
+    .data$sentinel_index, .data$sentinel, .data$truth, .data$rep,
+    method = "Mplus MSEM", estimate = .data$mplus_estimate,
+    se = .data$mplus_se, point_eligible = .data$mplus_point_eligible,
+    interval_eligible = .data$mplus_interval_eligible,
+    covered = .data$mplus_covered,
+    success_and_cover = .data$mplus_success_and_cover,
+    exclusion_reason = .data$mplus_exclusion_reason
+  ),
+  paired %>% transmute(
+    .data$sentinel_index, .data$sentinel, .data$truth, .data$rep,
+    method = "OpenMx matched joint growth", estimate = .data$openmx_estimate,
+    se = .data$openmx_se, point_eligible = .data$openmx_point_eligible,
+    interval_eligible = .data$openmx_interval_eligible,
+    covered = .data$openmx_covered,
+    success_and_cover = .data$openmx_success_and_cover,
+    exclusion_reason = .data$openmx_exclusion_reason
+  )
+) %>%
+  mutate(method = factor(.data$method, levels = names(method_palette)))
+
+metric_plot_data <- method_summary %>%
+  select(
+    .data$sentinel, .data$method,
+    `Interval eligibility` = .data$interval_eligibility,
+    `Conditional coverage` = .data$conditional_coverage,
+    `Success and cover` = .data$success_and_cover
+  ) %>%
+  pivot_longer(
+    cols = c("Interval eligibility", "Conditional coverage", "Success and cover"),
+    names_to = "metric", values_to = "value"
+  ) %>%
+  mutate(metric = factor(
+    .data$metric,
+    levels = c("Interval eligibility", "Conditional coverage", "Success and cover")
+  ))
+
+disposition <- paired %>%
+  count(.data$sentinel, .data$paired_interval_disposition, name = "replications") %>%
+  group_by(.data$sentinel) %>%
+  mutate(proportion = .data$replications / sum(.data$replications)) %>%
+  ungroup() %>%
+  mutate(paired_interval_disposition = factor(
+    .data$paired_interval_disposition,
+    levels = c("both eligible", "Mplus only", "OpenMx only", "neither eligible")
+  ))
+
+covariance_disposition <- paired %>%
+  count(.data$sentinel, .data$paired_psi_problem, name = "replications") %>%
+  group_by(.data$sentinel) %>%
+  mutate(proportion = .data$replications / sum(.data$replications)) %>%
+  ungroup() %>%
+  mutate(paired_psi_problem = factor(
+    .data$paired_psi_problem,
+    levels = c(
+      "both flag covariance problem", "Mplus warning only",
+      "OpenMx PSI problem only", "neither flags covariance problem"
+    )
+  ))
+
+both_eligible <- paired %>%
+  filter(.data$mplus_interval_eligible, .data$openmx_interval_eligible)
+overall <- tibble::tibble(
+  mplus_eligibility = mean(paired$mplus_interval_eligible),
+  openmx_eligibility = mean(paired$openmx_interval_eligible),
+  both_eligible_rate = mean(
+    paired$mplus_interval_eligible & paired$openmx_interval_eligible
+  ),
+  mplus_only = mean(
+    paired$mplus_interval_eligible & !paired$openmx_interval_eligible
+  ),
+  openmx_only = mean(
+    !paired$mplus_interval_eligible & paired$openmx_interval_eligible
+  ),
+  neither = mean(
+    !paired$mplus_interval_eligible & !paired$openmx_interval_eligible
+  ),
+  both_covariance_problem = mean(
+    paired$mplus_critical_warning & !paired$openmx_latent_psi_admissible
+  ),
+  mplus_warning_openmx_admissible = mean(
+    paired$mplus_critical_warning & paired$openmx_latent_psi_admissible
+  ),
+  mean_abs_estimate_difference = mean(
+    abs(both_eligible$openmx_estimate - both_eligible$mplus_estimate),
+    na.rm = TRUE
+  ),
+  max_abs_estimate_difference = max(
+    abs(both_eligible$openmx_estimate - both_eligible$mplus_estimate),
+    na.rm = TRUE
+  ),
+  mean_abs_se_difference = mean(
+    abs(both_eligible$openmx_se - both_eligible$mplus_se),
+    na.rm = TRUE
+  ),
+  median_abs_se_difference = median(
+    abs(both_eligible$openmx_se - both_eligible$mplus_se),
+    na.rm = TRUE
+  ),
+  p99_abs_se_difference = as.numeric(stats::quantile(
+    abs(both_eligible$openmx_se - both_eligible$mplus_se),
+    .99, na.rm = TRUE
+  )),
+  max_abs_se_difference = max(
+    abs(both_eligible$openmx_se - both_eligible$mplus_se),
+    na.rm = TRUE
+  ),
+  estimate_correlation = cor(
+    both_eligible$openmx_estimate, both_eligible$mplus_estimate,
+    use = "complete.obs"
+  ),
+  se_correlation = cor(
+    both_eligible$openmx_se, both_eligible$mplus_se,
+    use = "complete.obs"
+  ),
+  mplus_critical_n = sum(paired$mplus_critical_warning),
+  mplus_critical_openmx_psi_bad_n = sum(
+    paired$mplus_critical_warning & !paired$openmx_latent_psi_admissible
+  ),
+  mplus_unavailable_n = sum(
+    paired$mplus_interval_exclusion_reason == "estimation_unavailable"
+  ),
+  mplus_unavailable_openmx_ineligible_n = sum(
+    paired$mplus_interval_exclusion_reason == "estimation_unavailable" &
+      !paired$openmx_interval_eligible
+  )
+)
+se_outlier <- both_eligible %>%
+  mutate(abs_se_difference = abs(.data$openmx_se - .data$mplus_se)) %>%
+  slice_max(.data$abs_se_difference, n = 1L, with_ties = FALSE)
+```
+
+# Executive summary
+
+This diagnostic asks a narrower question than the main Study 3v2 comparison:
+does MSEM lose eligibility because the joint two-process growth model is weakly
+identified in these samples, or because of a software- or parameterization-
+specific fitting problem? The audit fits the **same 16-parameter model** in
+OpenMx and pairs it replication by replication with the completed Mplus MSEM
+results.
+
+The six sentinels contribute `r comma(nrow(paired))` paired replications. The
+overall interval-eligibility rates are
+`r fmt_pct(overall$mplus_eligibility)` for Mplus and
+`r fmt_pct(overall$openmx_eligibility)` for OpenMx. Both programs are eligible
+in `r fmt_pct(overall$both_eligible_rate)` of samples; Mplus alone is eligible in
+`r fmt_pct(overall$mplus_only)`, OpenMx alone in
+`r fmt_pct(overall$openmx_only)`, and neither in
+`r fmt_pct(overall$neither)`.
+
+Among samples that are eligible in both programs, the coefficient correlation
+is `r fmt_num(overall$estimate_correlation, 4)` and the mean absolute
+coefficient difference is `r fmt_num(overall$mean_abs_estimate_difference, 5)`.
+This agreement check is essential: eligibility comparisons are interpretable
+as software diagnostics only if the two implementations converge to the same
+solution when both succeed.
+
+The result is decisive at the scale this audit was designed to detect. All
+`r comma(overall$mplus_critical_n)` Mplus critical-warning samples also have an
+inadmissible OpenMx latent `PSI`. All
+`r comma(overall$mplus_unavailable_n)` samples in which Mplus estimation is
+unavailable are also ineligible in OpenMx. OpenMx rescues **none** of the Mplus
+failures; conversely, two Mplus-eligible samples receive an OpenMx status-6
+indefinite-Hessian result. Thus, switching software does not remedy the low
+MSEM eligibility in these difficult cells.
+
+# What was matched
+
+The current Mplus helper reshapes each process to one row per cluster and fits
+two linear latent growth curves. Inspection of the Mplus parameter table shows
+that `I1`, `S1`, and `I2` are exogenous and therefore have a freely estimated
+3-by-3 covariance matrix; `S2` is regressed on `I1` and `S1`; and `I2 WITH S2`
+is a residual covariance. The OpenMx RAM model reproduces those defaults
+explicitly.
+
+```{r parameter-table}
+bind_rows(
+  tibble::tribble(
+    ~`Parameter block`, ~Free_parameters, ~Specification,
+    "Structural regression", 2L, "S2 ON I1 S1",
+    "Exogenous latent covariance", 6L, "Unrestricted covariance of I1, S1, I2",
+    "Outcome-slope residual block", 2L, "Residual variance of S2; I2 WITH S2",
+    "Manifest residual variances", 2L, "One equality-constrained variance per process",
+    "Latent means/intercepts", 4L, "Means of I1, S1, I2 and intercept of S2"
+  ),
+  tibble::tibble(
+    `Parameter block` = "Total",
+    Free_parameters = 16L,
+    Specification = "Matched in both programs"
+  )
+) %>%
+  kable(align = c("l", "r", "l"))
+```
+
+The automated test inspects the actual OpenMx `A`, `S`, and mean matrices,
+including the implicit Mplus `I2 WITH I1` and `I2 WITH S1` paths. It also checks
+OpenMx's column-major covariance ordering and verifies the total of 16 free
+parameters. For eligible smoke-test samples, Mplus and OpenMx coefficients and
+SEs agree numerically.
+
+# Sentinel conditions
+
+The diagnostic is intentionally compact rather than another crossed simulation
+factor. Every sentinel uses three balanced observations per process. Conditions
+1--5 use 50 clusters and span the four reliability combinations; the low-low
+null distinguishes weak measurement from pressure caused by the structural
+path. Condition 6 repeats the hardest low-low large-effect covariance shape at
+300 clusters.
+
+```{r sentinel-table}
+paired %>%
+  distinct(
+    .data$sentinel_index, .data$sentinel, .data$condition_id,
+    .data$num_clus, .data$target_reliability_y,
+    .data$target_reliability_q, .data$marginal_rho,
+    .data$standardized_beta_target
+  ) %>%
+  transmute(
+    Sentinel = as.character(.data$sentinel),
+    `Production condition` = .data$condition_id,
+    N = .data$num_clus,
+    `Predictor reliability` = .data$target_reliability_y,
+    `Outcome reliability` = .data$target_reliability_q,
+    rho = .data$marginal_rho,
+    beta = .data$standardized_beta_target
+  ) %>%
+  kable(align = c("l", rep("r", 6)))
+```
+
+# Eligibility, coverage, and operational success
+
+```{r primary-performance-plot, fig.width=12, fig.height=8}
+ggplot(metric_plot_data, aes(
+  x = .data$value,
+  y = .data$sentinel,
+  colour = .data$method,
+  group = .data$method
+)) +
+  geom_vline(
+    data = tibble::tibble(
+      metric = factor(
+        c("Conditional coverage", "Interval eligibility"),
+        levels = levels(metric_plot_data$metric)
+      ),
+      reference = c(.95, 1)
+    ),
+    aes(xintercept = .data$reference),
+    inherit.aes = FALSE, linetype = 2, colour = "grey55"
+  ) +
+  geom_point(size = 2.8, position = position_dodge(width = .35)) +
+  facet_wrap(~ metric, ncol = 1) +
+  scale_x_continuous(limits = c(0, 1), labels = percent_format(accuracy = 1)) +
+  scale_colour_manual(values = method_palette) +
+  labs(
+    x = "Proportion",
+    y = NULL,
+    colour = NULL,
+    title = "The paired audit separates eligibility from conditional coverage",
+    subtitle = "Each point uses the same 100 simulated samples in both programs"
+  ) +
+  theme_vh()
+```
+
+Conditional coverage is calculated only among eligible intervals. Success-and-
+cover instead counts the probability that a repeated sample produces an
+eligible interval containing the truth. The paired design makes any difference
+in those operational quantities considerably more precise than an independent
+software comparison.
+
+```{r paired-eligibility-disposition, fig.width=12, fig.height=6.5}
+ggplot(disposition, aes(
+  x = .data$proportion,
+  y = .data$sentinel,
+  fill = .data$paired_interval_disposition
+)) +
+  geom_col(width = .72) +
+  geom_text(
+    aes(label = if_else(
+      .data$proportion >= .04,
+      percent(.data$proportion, accuracy = 1), ""
+    )),
+    position = position_stack(vjust = .5), colour = "white", size = 3
+  ) +
+  scale_x_continuous(labels = percent_format(accuracy = 1)) +
+  scale_fill_manual(values = c(
+    "both eligible" = "#59A14F",
+    "Mplus only" = "#F28E2B",
+    "OpenMx only" = "#4E79A7",
+    "neither eligible" = "#9D9D9D"
+  )) +
+  labs(
+    x = "Proportion of paired replications",
+    y = NULL,
+    fill = NULL,
+    title = "Eligibility concordance identifies model-wide versus software-specific failures"
+  ) +
+  theme_vh()
+```
+
+# Do the programs flag the same covariance problem?
+
+The primary OpenMx eligibility definition is deliberately strict. It requires
+status zero, a finite positive SE, a definite information matrix, and a
+positive-definite full 4-by-4 latent residual covariance matrix (`PSI`). Mplus
+eligibility applies the existing production rule: a returned solution with a
+critical Mplus warning, including a non-positive-definite `PSI`, is excluded.
+
+```{r covariance-concordance, fig.width=12, fig.height=6.5}
+ggplot(covariance_disposition, aes(
+  x = .data$proportion,
+  y = .data$sentinel,
+  fill = .data$paired_psi_problem
+)) +
+  geom_col(width = .72) +
+  geom_text(
+    aes(label = if_else(
+      .data$proportion >= .04,
+      percent(.data$proportion, accuracy = 1), ""
+    )),
+    position = position_stack(vjust = .5), colour = "white", size = 3
+  ) +
+  scale_x_continuous(labels = percent_format(accuracy = 1)) +
+  scale_fill_manual(values = c(
+    "both flag covariance problem" = "#B07AA1",
+    "Mplus warning only" = "#E15759",
+    "OpenMx PSI problem only" = "#4E79A7",
+    "neither flags covariance problem" = "#59A14F"
+  )) +
+  labs(
+    x = "Proportion of paired replications",
+    y = NULL,
+    fill = NULL,
+    title = "Latent-covariance diagnostics localize the source of attrition",
+    subtitle = "Fully unavailable Mplus fits need not contain a critical-warning flag"
+  ) +
+  theme_vh()
+```
+
+Across the six sentinels, both programs flag a covariance problem in
+`r fmt_pct(overall$both_covariance_problem)` of samples. Mplus gives a critical
+warning while OpenMx reaches an admissible `PSI` solution in
+`r fmt_pct(overall$mplus_warning_openmx_admissible)`. These categories should
+be read with the eligibility disposition: agreement on the covariance problem
+supports a data/model-information explanation, whereas a large Mplus-warning/
+OpenMx-admissible category points to optimizer, starting-value, or
+parameterization sensitivity.
+
+# Agreement when both programs are eligible
+
+```{r estimate-agreement, fig.width=11.5, fig.height=8}
+ggplot(both_eligible, aes(
+  x = .data$mplus_estimate,
+  y = .data$openmx_estimate,
+  colour = .data$sentinel
+)) +
+  geom_abline(slope = 1, intercept = 0, linetype = 2, colour = "grey45") +
+  geom_point(alpha = .65, size = 1.8) +
+  facet_wrap(~ sentinel, scales = "free", ncol = 3) +
+  guides(colour = "none") +
+  labs(
+    x = "Mplus focal estimate",
+    y = "OpenMx focal estimate",
+    title = "Eligible solutions target the same coefficient",
+    subtitle = paste0(
+      "Overall r = ", fmt_num(overall$estimate_correlation, 4),
+      "; mean absolute difference = ",
+      fmt_num(overall$mean_abs_estimate_difference, 5)
+    )
+  ) +
+  theme_vh()
+```
+
+```{r se-agreement, fig.width=11.5, fig.height=8}
+ggplot(both_eligible, aes(
+  x = .data$mplus_se,
+  y = .data$openmx_se,
+  colour = .data$sentinel
+)) +
+  geom_abline(slope = 1, intercept = 0, linetype = 2, colour = "grey45") +
+  geom_point(alpha = .65, size = 1.8) +
+  facet_wrap(~ sentinel, scales = "free", ncol = 3) +
+  guides(colour = "none") +
+  labs(
+    x = "Mplus focal SE",
+    y = "OpenMx focal SE",
+    title = "Eligible solutions also agree on uncertainty",
+    subtitle = paste0(
+      "Overall r = ", fmt_num(overall$se_correlation, 4),
+      "; mean absolute difference = ", fmt_num(overall$mean_abs_se_difference, 5)
+    )
+  ) +
+  theme_vh()
+```
+
+The fixed reporting multiplier is identical in the two programs, so these SEs
+do not differ because one program applies a delta method to a fitted scaling
+variance. Agreement therefore tests the likelihood specification, parameter
+mapping, and information matrix much more directly than comparing MSEM with
+2S-PA.
+
+SE agreement is also strong but has one informative tail exception. The median
+absolute SE difference is
+`r fmt_num(overall$median_abs_se_difference, 5)` and the 99th percentile is
+`r fmt_num(overall$p99_abs_se_difference, 4)`. The maximum difference,
+`r fmt_num(overall$max_abs_se_difference, 3)`, occurs in sentinel
+`r se_outlier$sentinel_index`, replication `r se_outlier$rep`, where both SEs
+are extremely large (Mplus `r fmt_num(se_outlier$mplus_se, 3)`; OpenMx
+`r fmt_num(se_outlier$openmx_se, 3)`). This is consistent with a very flat,
+boundary-adjacent likelihood rather than a systematic SE scaling mismatch.
+
+# Numerical results
+
+```{r method-summary-table}
+method_summary %>%
+  transmute(
+    Sentinel = as.character(.data$sentinel),
+    Method = as.character(.data$method),
+    `Interval eligible` = percent(.data$interval_eligibility, accuracy = .1),
+    Bias = round(.data$bias_among_point_eligible, 3),
+    `Mean SE` = round(.data$mean_se_among_interval_eligible, 3),
+    `Conditional coverage` = percent(.data$conditional_coverage, accuracy = .1),
+    `Success and cover` = percent(.data$success_and_cover, accuracy = .1)
+  ) %>%
+  kable(align = c("l", "l", rep("r", 5)))
+```
+
+```{r paired-summary-table}
+paired_summary %>%
+  transmute(
+    Sentinel = as.character(.data$sentinel),
+    Both = percent(.data$both_eligible, accuracy = .1),
+    `Mplus only` = percent(.data$mplus_only_eligible, accuracy = .1),
+    `OpenMx only` = percent(.data$openmx_only_eligible, accuracy = .1),
+    Neither = percent(.data$neither_eligible, accuracy = .1),
+    `OpenMx - Mplus eligibility` = percent(
+      .data$paired_eligibility_difference, accuracy = .1
+    ),
+    `Paired MCSE` = percent(
+      as.numeric(.data$paired_eligibility_difference_mc_se), accuracy = .1
+    ),
+    `Eligible estimate r` = round(
+      as.numeric(.data$both_eligible_estimate_correlation), 4
+    )
+  ) %>%
+  kable(align = c("l", rep("r", 7)))
+```
+
+# Conclusions
+
+The audit was constructed to distinguish three possibilities:
+
+1. **Same estimates and same failures.** This is strong evidence that weak
+   information for the joint growth model, rather than a program-specific bug,
+   causes the attrition.
+2. **Same estimates when eligible, but OpenMx is eligible more often.** The
+   estimand and likelihood agree, but numerical strategy matters. Starting
+   values, retry behavior, optimizer choice, or covariance parameterization can
+   determine whether a sample reaches an admissible solution.
+3. **Different estimates among mutually eligible fits.** This would indicate a
+   remaining model-specification mismatch and would invalidate the eligibility
+   comparison until resolved.
+
+The observed results match the **first** possibility. The mutually eligible
+fits agree almost exactly on the focal path, and the eligibility classifications
+agree in 598 of 600 paired samples. The two disagreements favor Mplus, not
+OpenMx. Most importantly, every Mplus critical covariance warning is reproduced
+as an inadmissible latent covariance matrix in OpenMx, and no Mplus-unavailable
+sample becomes OpenMx-eligible.
+
+Accordingly, the poor MSEM eligibility in Study 3v2 should be interpreted as a
+property of fitting this relatively elaborate joint growth model with weak
+level-2 information. It is not explained by a Mplus parsing bug, an overly
+aggressive warning screen, or a Mplus-specific optimizer failure. The existing
+success-and-cover analysis therefore remains substantively meaningful: many
+samples genuinely do not support an admissible joint-model interval.
+
+This finding also changes the priority of possible remedies. Merely porting
+MSEM to OpenMx is not promising. Remedies would need to change the information
+or estimator, for example by increasing the number of clusters, improving
+slope reliability, using a positive-definite covariance parameterization,
+regularizing weak variance/covariance components, or introducing principled
+Bayesian priors. Those changes may be useful, but they define modified
+estimators and must be evaluated for bias and interval calibration; they are
+not neutral software bug fixes.
+
+## Limitations and remaining questions
+
+The audit uses 100 paired replications per sentinel, so a single-cell
+proportion near 50% has an ordinary Monte Carlo SE of approximately five
+percentage points. It is designed to discriminate large mechanisms, not to
+provide final publication-grade performance estimates. The OpenMx path also
+uses the repository's `mxTryHard` retry wrapper (up to five attempts), whereas
+the Mplus rows come from the production fitting path. Any OpenMx advantage
+therefore establishes **numerical remediability**, but does not by itself prove
+that the software brand is causal. In fact, OpenMx shows no advantage here even
+with those retries, which makes optimizer tuning a lower-priority follow-up.
+
+Finally, Mplus prints the saved coefficient and SE to three decimal places,
+whereas the OpenMx results retain full numerical precision. Small paired
+differences therefore partly reflect reporting precision. The single large SE
+difference noted above warrants retaining both programs in any future audit of
+SE tails, but it does not affect the eligibility conclusion.
+
+# Reproducibility
+
+The audit regenerates every sample using the saved production replication seed
+and stops if the regenerated and saved seeds disagree. It reads, but never
+modifies, the Study 3v2 production files. Per-sentinel results are resumable and
+are stored separately under the diagnostic output directory.
+
+```{r completion-table}
+completion %>%
+  transmute(
+    Sentinel = .data$sentinel_index,
+    `Production condition` = .data$condition_id,
+    Rows = .data$rows,
+    `Unique replications` = .data$unique_reps,
+    Complete = .data$complete_rep_set
+  ) %>%
+  kable(align = c("r", "r", "r", "r", "c"))
+```
+
+```{r session-information}
+sessionInfo()
+```
