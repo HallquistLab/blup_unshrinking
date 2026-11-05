@@ -24,5 +24,5 @@ keywords:
 date-released: 2026-11-04
 identifiers:
   - type: doi
-    value: "10.5281/zenodo.23982453"
-    description: "Sanitized repair-v1.0.0 software release"
+    value: "10.5281/zenodo.23982335"
+    description: "Software concept DOI"
