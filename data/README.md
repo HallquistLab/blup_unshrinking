@@ -25,7 +25,7 @@ REPAIR simulation data concept DOI: 10.5281/zenodo.23965546
 ```
 
 The sanitized software release DOI is
-[10.5281/zenodo.23982483](https://doi.org/10.5281/zenodo.23982483). The
+[10.5281/zenodo.23982702](https://doi.org/10.5281/zenodo.23982702). The
 software DOI and data DOI should be cited together when an analysis uses both
 the code and these simulation results. The software repository contains
 the readers and analysis scripts; this data record contains the generated
