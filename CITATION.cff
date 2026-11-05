@@ -8,9 +8,9 @@ authors:
   - family-names: Hallquist
     given-names: Michael
 abstract: >-
-  Reproducible R code, simulation drivers, analyses, and technical notes for
-  the REPAIR study by Vig and Hallquist (2026), which evaluates random-effect
-  prediction adjustment for inference in regression.
+  Reproducible R code and simulation drivers for the REPAIR study by Vig and
+  Hallquist (2026), which evaluates random-effect prediction adjustment for
+  inference in regression.
 repository-code: "https://github.com/HallquistLab/blup_unshrinking"
 url: "https://github.com/HallquistLab/blup_unshrinking"
 license: GPL-3.0-only
@@ -22,7 +22,3 @@ keywords:
   - score correction
   - simulation
 date-released: 2026-11-04
-identifiers:
-  - type: doi
-    value: "10.5281/zenodo.23982335"
-    description: "Software concept DOI"

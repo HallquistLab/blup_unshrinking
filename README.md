@@ -1,20 +1,15 @@
 # REPAIR: Random-effect prediction adjustment for inference in regression
 
-This release contains the sanitized runnable code for the REPAIR simulation
-study by Zach Vig and Michael Hallquist (2026). It contains the study-specific
-simulation drivers under `vig_hallquist_2026/` and the shared R helpers
-required to run them under `R/`.
+This release contains the amended **v2 simulation pipeline for Studies 1--4** used in the REPAIR manuscript (Vig Hallquist, 2026). It is a sanitized release tree: legacy v1 designs, Study 5, ICC bridge code, variance-ratio sensitivity code, and manuscript analysis scripts are not included.
 
-## Contents
+The simulation data are archived separately in Zenodo record [10.5281/zenodo.23965547](https://doi.org/10.5281/zenodo.23965547). See [`data/README.md`](data/README.md) for file checksums and loading instructions.
 
-- `vig_hallquist_2026/`: REPAIR study designs, simulation runner, and batch
-  scripts.
-- `R/`: shared helper modules sourced by the REPAIR runner.
-- `data/README.md`: access instructions and checksums for the separately
-  archived simulation data.
+## Running the simulations
 
-The manuscript-facing analysis folder is intentionally excluded from this
-release. The large Parquet simulation datasets are available from the data
-record at [10.5281/zenodo.23965547](https://doi.org/10.5281/zenodo.23965547).
-The software version and its related releases are listed at the Zenodo
-software concept DOI [10.5281/zenodo.23982335](https://doi.org/10.5281/zenodo.23982335).
+From this directory, install the R package dependencies used by the shared helpers, then run:
+
+```sh
+Rscript vig_hallquist_2026/random_effects_structural_simulation.R
+```
+
+The default selection is `allv2`. Individual amended studies can be selected with `1v2`, `2v2`, `3v2`, or `4v2`.

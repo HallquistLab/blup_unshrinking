@@ -2,11 +2,9 @@
 
 #' ---
 #' title: "REPAIR: Random-effect prediction adjustment for inference in regression"
-#' description: "Legacy and amended simulation studies including: (1) RE as outcome,
+#' description: "Amended v2 Studies 1--4 including: (1) RE as outcome,
 #'               (2) RE as predictor, (3) RE as predictor and outcome,
-#'               (4) heterogeneous cluster information and reliability,
-#'               (5) matched reliability calibration bridge, and an
-#'               ICC-versus-posterior-reliability bridge"
+#'               (4) heterogeneous cluster information and reliability"
 #' ---
 
 # TODO: check these exports
@@ -77,7 +75,7 @@ source(file.path(vig_hallquist_dir, "vh_study_common.R"), local = TRUE)
 source(file.path(vig_hallquist_dir, "vh_designs.R"), local = TRUE)
 source(file.path(vig_hallquist_dir, "vh_study1.R"), local = TRUE)
 source(file.path(vig_hallquist_dir, "vh_study2.R"), local = TRUE)
-for (study_file in c("vh_study3.R", "vh_study4.R", "vh_study5.R")) {
+for (study_file in c("vh_study3.R", "vh_study4.R")) {
   study_path <- file.path(vig_hallquist_dir, study_file)
   if (file.exists(study_path)) {
     source(study_path, local = TRUE)
@@ -92,7 +90,7 @@ args <- commandArgs(trailingOnly = TRUE)
 
 if (sys.nframe() == 0L) {
   n_sim <- if (length(args) >= 1L) as.integer(args[[1]]) else 100L
-  study_arg <- if (length(args) >= 2L) args[[2]] else "all"
+  study_arg <- if (length(args) >= 2L) args[[2]] else "allv2"
   out_dir <- if (length(args) >= 3L) args[[3]] else file.path(vig_hallquist_dir, "outputs", "vig_hallquist")
   n_cores <- if (length(args) >= 4L) as.integer(args[[4]]) else 1L
   max_conditions <- if (length(args) >= 5L) parse_optional_integer_arg(args[[5]]) else NA_integer_
